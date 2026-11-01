@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      5.6.0
+// @version      5.7.0
 // @description  Better quotes & delete button, quote blocks, upload progress bar, and Go to Forum button with settings.
 // @author       lester
 // @match        *://chat.flashii.net/*
@@ -19,9 +19,10 @@
 
   const W = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
   const STORAGE_PREFIX = "ultreme_";
-  const cssID = "chat-style";
+  const cssID = "ultreme-style";
   const ULTREME_MENU_ID = "ultreme";
-  const DEFAULT_NAME_COLOR = "#ffffff";
+  const UI_FONT_FAMILY = "InterVariable, Inter, system-ui, sans-serif";
+  const DEFAULT_NAME_COLOR = "currentColor";
   const DEFAULT_AVATAR_URL = "https://flashii.net/assets/avatar/";
   const PATCHII_PAGE_URL =
     "https://patchii.net/lester/flashii-chat-userscripts";
@@ -36,69 +37,151 @@
   const UPLOAD_PREVIEW_DURATION_MS = 1500;
   let didAutoUpdateCheck = false;
 
-  const loadBoolSetting = (key, def) => {
+  // Keys also identify the existing ultreme_ localStorage entries.
+  const SETTINGS_SECTIONS = [
+    {
+      id: "quotes", title: "Quotes", fields: [
+        { key: "showQuoteButton", label: "Show Quote button", default: true },
+        { key: "showGotoButton", label: "Show Go to quoted button", default: true },
+        { key: "enableQuoteBlocks", label: "Render quote blocks", default: true },
+        {
+          key: "interceptNativeQuoteButton", label: "Use rich partial quotes", default: true,
+          hint: "Use the toolbar Quote button to quote selected message text with its author.",
+        },
+      ],
+    },
+    {
+      id: "messages", title: "Messages", fields: [
+        {
+          key: "messageButtonContent", label: "Message button content", default: "icons",
+          control: "select", options: [
+            { value: "icons", label: "Icons" },
+            { value: "text", label: "Text" },
+            { value: "both", label: "Icons and text" },
+          ],
+        },
+        {
+          key: "messageButtonVisibility", label: "Message button visibility", default: "hover",
+          control: "select", options: [
+            { value: "hover", label: "On hover, focus or tap" },
+            { value: "always", label: "Always visible" },
+          ],
+        },
+        {
+          key: "messageButtonAppearance", label: "Message button appearance", default: "subtle",
+          control: "select", options: [
+            { value: "subtle", label: "Subtle" },
+            { value: "outlined", label: "Outlined" },
+            { value: "filled", label: "Filled" },
+          ],
+        },
+        {
+          key: "enableDelete", label: "Enable deletion", default: true,
+          hint: "Hold Shift and click your message's timestamp to delete it.",
+        },
+        {
+          key: "showDeleteButton", label: "Show Delete button", default: true,
+          enabled: values => values.enableDelete,
+        },
+        { key: "enableKonkira", label: "Compact join/leave notices", default: true },
+      ],
+    },
+    {
+      id: "uploads", title: "Uploads", fields: [
+        { key: "enableUploadProgress", label: "Show upload progress", default: true },
+        {
+          key: "uploadProgressDisplayMode", label: "Display", default: "combined",
+          enabled: values => values.enableUploadProgress,
+          options: [
+            { value: "combined", label: "Combined bar", className: "js-ultreme-uploadProgressDisplayCombined" },
+            { value: "perfile", label: "Per-file popups", className: "js-ultreme-uploadProgressDisplayPerFile" },
+          ],
+        },
+        {
+          key: "uploadProgressTextMode", label: "Progress text", default: "percent",
+          enabled: values => values.enableUploadProgress,
+          visible: values => values.uploadProgressDisplayMode === "combined",
+          options: [
+            { value: "percent", label: "Percentage", className: "js-ultreme-uploadProgressPercent" },
+            { value: "size", label: "File size", className: "js-ultreme-uploadProgressSize" },
+            { value: "both", label: "Both", className: "js-ultreme-uploadProgressBoth" },
+          ],
+        },
+        {
+          key: "showUploadFileSize", label: "Show separate file-size label", default: true,
+          enabled: values => values.enableUploadProgress,
+          visible: values => values.uploadProgressDisplayMode === "combined" &&
+            values.uploadProgressTextMode === "percent",
+        },
+      ],
+    },
+    {
+      id: "navigation", title: "Navigation", fields: [
+        { key: "enableForumButton", label: "Show Forum button", default: true },
+        { key: "enableJumpToBottomButton", label: "Show Jump to bottom button", default: true },
+      ],
+    },
+    { id: "about", title: "About", fields: [] },
+  ];
+  const settingDefinitions = new Map(SETTINGS_SECTIONS.flatMap(section =>
+    section.fields.map(field => [field.key, field])));
+  const loadSetting = (field) => {
     try {
-      const v = localStorage.getItem(STORAGE_PREFIX + key);
-      if (v === null) return def;
-      return v === "1";
+      const value = localStorage.getItem(STORAGE_PREFIX + field.key);
+      if (value === null) return field.default;
+      if (typeof field.default === "boolean") return value === "1";
+      return field.options.some(option => option.value === value) ? value : field.default;
     } catch {
-      return def;
+      return field.default;
     }
   };
-
-  const saveBoolSetting = (key, val) => {
+  const settings = Object.fromEntries([...settingDefinitions].map(([key, field]) =>
+    [key, loadSetting(field)]));
+  const saveSetting = (key, value) => {
+    settings[key] = value;
     try {
-      localStorage.setItem(STORAGE_PREFIX + key, val ? "1" : "0");
+      localStorage.setItem(STORAGE_PREFIX + key,
+        typeof value === "boolean" ? (value ? "1" : "0") : value);
     } catch {}
   };
 
-  const loadStringSetting = (key, def, allowed = null) => {
-    try {
-      const v = localStorage.getItem(STORAGE_PREFIX + key);
-      if (v === null) return def;
-      if (allowed && !allowed.includes(v)) return def;
-      return v;
-    } catch {
-      return def;
+  let revealedActionMessage = null;
+  const dismissTouchActions = () => {
+    if (!revealedActionMessage) return;
+    const focused = document.activeElement;
+    if (focused?.closest?.(".message-button-container")?.parentElement === revealedActionMessage)
+      focused.blur();
+    revealedActionMessage.classList.remove("ultreme-actions-open");
+    revealedActionMessage = null;
+  };
+
+  const applyMessageButtonSettings = () => {
+    dismissTouchActions();
+    document.body.dataset.ultremeButtonContent = settings.messageButtonContent;
+    document.body.dataset.ultremeButtonVisibility = settings.messageButtonVisibility;
+    document.body.dataset.ultremeButtonAppearance = settings.messageButtonAppearance;
+  };
+
+  const syncActionThemeColors = () => {
+    const accent = W.getComputedStyle(document.body).accentColor;
+    const color = accent && accent !== "auto" ? accent : "Highlight";
+    const channels = color.startsWith("rgb") ? color.match(/[\d.]+/g)?.slice(0, 3) : null;
+    let foreground = "HighlightText";
+    if (channels?.length === 3) {
+      const linear = channels.map(value => {
+        const channel = Number(value) / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+      foreground = luminance > 0.179 ? "#000" : "#fff";
     }
+    document.body.style.setProperty("--ultreme-action-accent", color);
+    document.body.style.setProperty("--ultreme-action-foreground", foreground);
   };
-
-  const saveStringSetting = (key, val) => {
-    try {
-      localStorage.setItem(STORAGE_PREFIX + key, val);
-    } catch {}
-  };
-
-  let showQuoteButton = loadBoolSetting("showQuoteButton", true);
-  let showGotoButton = loadBoolSetting("showGotoButton", true);
-  let enableDelete = loadBoolSetting("enableDelete", true);
-  let showDeleteButton = loadBoolSetting("showDeleteButton", true);
-  let enableQuoteBlocks = loadBoolSetting("enableQuoteBlocks", true);
-  let interceptNativeQuoteButton = loadBoolSetting(
-    "interceptNativeQuoteButton",
-    true,
-  );
-  let enableUploadProgress = loadBoolSetting("enableUploadProgress", true);
-  let uploadProgressTextMode = loadStringSetting(
-    "uploadProgressTextMode",
-    "percent",
-    ["percent", "size", "both"],
-  );
-  let uploadProgressDisplayMode = loadStringSetting(
-    "uploadProgressDisplayMode",
-    "combined",
-    ["combined", "perfile"],
-  );
-  let showUploadFileSize = loadBoolSetting("showUploadFileSize", true);
-  let enableForumButton = loadBoolSetting("enableForumButton", true);
-  let enableJumpToBottomButton = loadBoolSetting(
-    "enableJumpToBottomButton",
-    true,
-  );
-  let enableKonkira = loadBoolSetting("enableKonkira", true);
 
   let selectedText = "";
   let selectedQuoteData = null;
+  let applySelectedQuote = null;
   let pendingQuote = null;
   let previewInterval = null;
   let selectedMessageIndex = -1;
@@ -108,9 +191,6 @@
   let mediaModal = null;
   const NativeXHR = W.XMLHttpRequest;
   const uploads = new Map();
-  const __ultremeXhrMeta = new WeakMap();
-  const __ultremeOrigOpen = NativeXHR.prototype.open;
-  const __ultremeOrigSend = NativeXHR.prototype.send;
   let combinedUploadPreviewTimer = null;
   let perFileUploadPreviewTimer = null;
   const measureUploadProgressTextWidth = (() => {
@@ -120,7 +200,7 @@
       canvas ||= document.createElement("canvas");
       ctx ||= canvas.getContext("2d");
       if (!ctx) return DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH;
-      ctx.font = "bold 12px sans-serif";
+      ctx.font = `bold 12px ${UI_FONT_FAMILY}`;
       return Math.ceil(ctx.measureText(String(text || "")).width);
     };
   })();
@@ -141,13 +221,13 @@
   };
 
   const getCombinedUploadProgressText = (percent, sizeText) => {
-    if (uploadProgressTextMode === "size") return sizeText;
-    if (uploadProgressTextMode === "both") return `${percent}%   ${sizeText}`;
+    if (settings.uploadProgressTextMode === "size") return sizeText;
+    if (settings.uploadProgressTextMode === "both") return `${percent}%   ${sizeText}`;
     return `${percent}%`;
   };
 
   const getCombinedUploadProgressBarWidth = (barText) =>
-    uploadProgressTextMode === "percent"
+    settings.uploadProgressTextMode === "percent"
       ? DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH
       : Math.max(
           DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH,
@@ -159,12 +239,16 @@
     const container = getMessagesContainer();
     if (!container) return [];
     return [...container.children].filter((msg) =>
-      msg.classList.contains("message"),
+      msg.classList.contains("message") &&
+      !msg.classList.contains("hidden") &&
+      !!buildQuoteDataFromMessageElement(msg) &&
+      !getConnectionNoticeType(msg),
     );
   };
 
   const rgbToHex = (rgb) => {
     const m = rgb?.match(/\d+/g);
+    if (rgb?.startsWith("#")) return rgb;
     return m?.length >= 3
       ? "#" +
           m
@@ -210,13 +294,20 @@
     setTimeout(() => target.classList.remove("highlight-temp"), 1500);
   };
 
+  // Mami renders connection notices as tiny messages, with these exact bodies.
+  const getConnectionNoticeType = (msg) => {
+    if (msg.dataset.tiny !== "1") return null;
+    const body = (msg.dataset.body || "").trim();
+    if (body === "has joined" || body === "has joined the channel") return "join";
+    if (body === "has disconnected" || body === "has left the channel") return "leave";
+    return null;
+  };
+
   function createProgressBar() {
     if (document.getElementById("upload-progress-wrapper")) return;
 
-    const spoilerBtn = [...document.querySelectorAll(".markup__button")].find(
-      (btn) => btn.textContent.trim().toLowerCase() === "spoiler",
-    );
-    if (!spoilerBtn) return;
+    const menu = document.querySelector("form.input .input__menu");
+    if (!menu) return;
 
     const wrapper = document.createElement("div");
     wrapper.id = "upload-progress-wrapper";
@@ -232,18 +323,18 @@
     const label = document.createElement("span");
     label.textContent = "Uploading File...";
     label.style.cssText = `
-      color: var(--theme-colour-main-colour);
+      color: var(--theme-colour-main-colour, CanvasText);
       font-size: 13px;
     `;
 
     const sizeLabel = document.createElement("span");
     sizeLabel.id = "upload-progress-size";
     sizeLabel.style.cssText = `
-      color: var(--theme-colour-main-colour);
+      color: var(--theme-colour-main-colour, CanvasText);
       font-size: 12px;
       min-width: 120px;
       white-space: nowrap;
-      display: ${uploadProgressTextMode === "percent" && showUploadFileSize ? "" : "none"};
+      display: ${settings.uploadProgressTextMode === "percent" && settings.showUploadFileSize ? "" : "none"};
     `;
 
     const barContainer = document.createElement("div");
@@ -252,16 +343,16 @@
       position: relative;
       width: ${DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH}px;
       height: 20px;
-      background-color: var(--theme-colour-input-menu-button);
+      background-color: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
       border-radius: 2px;
-      box-shadow: 0 0 0 1px var(--theme-colour-input-menu-box-shadow);
+      box-shadow: 0 0 0 1px var(--theme-colour-input-menu-box-shadow, light-dark(#ccc, #444));
       overflow: hidden;
     `;
 
     const inner = document.createElement("div");
     inner.id = "upload-progress-inner";
     inner.style.cssText = `
-      background-color: var(--theme-colour-input-menu-button-hover);
+      background-color: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
       position: absolute;
       inset: 0 auto 0 0;
       height: 100%;
@@ -277,17 +368,17 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--theme-colour-main-colour);
+      color: var(--theme-colour-main-colour, CanvasText);
       font-size: 12px;
       font-weight: bold;
-      font-family: sans-serif;
+      font-family: inherit;
       white-space: pre;
       pointer-events: none;
     `;
 
     barContainer.append(inner, text);
     wrapper.append(label, barContainer, sizeLabel);
-    spoilerBtn.parentElement?.appendChild(wrapper);
+    menu.appendChild(wrapper);
   }
 
   function createUploadPopup() {
@@ -320,7 +411,7 @@
       combinedUploadPreviewTimer = null;
     }
 
-    if (uploads.size > 0 || uploadProgressDisplayMode !== "combined") return;
+    if (uploads.size > 0 || settings.uploadProgressDisplayMode !== "combined") return;
 
     const elements = getCombinedUploadProgressElements();
     if (!elements) return;
@@ -335,8 +426,8 @@
 
   function showCombinedUploadPreview() {
     if (
-      !enableUploadProgress ||
-      uploadProgressDisplayMode !== "combined" ||
+      !settings.enableUploadProgress ||
+      settings.uploadProgressDisplayMode !== "combined" ||
       uploads.size > 0
     )
       return;
@@ -361,7 +452,7 @@
     text.textContent = barText;
     sizeLabel.textContent = previewSizeText;
     sizeLabel.style.display =
-      uploadProgressTextMode === "percent" && showUploadFileSize ? "" : "none";
+      settings.uploadProgressTextMode === "percent" && settings.showUploadFileSize ? "" : "none";
 
     if (combinedUploadPreviewTimer) clearTimeout(combinedUploadPreviewTimer);
     combinedUploadPreviewTimer = setTimeout(() => {
@@ -373,13 +464,10 @@
     if (!body || typeof body !== "object") return `Upload ${fallbackId}`;
 
     try {
+      if (body instanceof W.File && body.name) return body.name;
       if (typeof body.entries === "function") {
         for (const [, value] of body.entries()) {
-          if (
-            typeof File !== "undefined" &&
-            value instanceof File &&
-            value.name
-          )
+          if (value instanceof W.File && value.name)
             return value.name;
         }
       }
@@ -444,15 +532,15 @@
       perFileUploadPreviewTimer = null;
     }
 
-    if (uploads.size > 0 || uploadProgressDisplayMode !== "perfile") return;
+    if (uploads.size > 0 || settings.uploadProgressDisplayMode !== "perfile") return;
 
     removeUploadPopupItem("__preview__");
   }
 
   function showPerFileUploadPreview() {
     if (
-      !enableUploadProgress ||
-      uploadProgressDisplayMode !== "perfile" ||
+      !settings.enableUploadProgress ||
+      settings.uploadProgressDisplayMode !== "perfile" ||
       uploads.size > 0
     )
       return;
@@ -481,7 +569,7 @@
     clearCombinedUploadPreview();
     clearPerFileUploadPreview();
 
-    if (uploadProgressDisplayMode === "perfile") showPerFileUploadPreview();
+    if (settings.uploadProgressDisplayMode === "perfile") showPerFileUploadPreview();
     else showCombinedUploadPreview();
   }
 
@@ -511,18 +599,6 @@
       size.textContent = `${formatUploadSize(upload.loaded)}/${formatUploadSize(upload.total)}`;
       fill.style.width = `${percent}%`;
       item.classList.toggle("is-done", upload.done);
-
-      if (upload.done) {
-        if (!upload.dismissTimer) {
-          upload.dismissTimer = setTimeout(() => {
-            removeUploadPopupItem(id);
-            uploads.delete(id);
-          }, 1200);
-        }
-      } else if (upload.dismissTimer) {
-        clearTimeout(upload.dismissTimer);
-        upload.dismissTimer = null;
-      }
     }
 
     for (const item of [...popup.querySelectorAll(".upload-progress-item")]) {
@@ -533,20 +609,13 @@
   }
 
   function refreshUploadProgressUI() {
-    if (!enableUploadProgress) return;
+    if (!settings.enableUploadProgress) return;
 
-    if (uploadProgressDisplayMode === "perfile") {
+    if (settings.uploadProgressDisplayMode === "perfile") {
       clearCombinedUploadPreview();
       document.getElementById("upload-progress-wrapper")?.remove();
       updatePerFileProgress();
       return;
-    }
-
-    for (const upload of uploads.values()) {
-      if (upload.dismissTimer) {
-        clearTimeout(upload.dismissTimer);
-        upload.dismissTimer = null;
-      }
     }
 
     getUploadPopupRoot()?.remove();
@@ -558,12 +627,10 @@
   function updateCombinedProgress() {
     let totalLoaded = 0;
     let totalSize = 0;
-    let allDone = true;
 
-    for (const { loaded, total, done } of uploads.values()) {
+    for (const { loaded, total } of uploads.values()) {
       totalLoaded += loaded;
       totalSize += total;
-      if (!done) allDone = false;
     }
 
     const percent =
@@ -576,90 +643,92 @@
     const barText = getCombinedUploadProgressText(percent, sizeText);
     const barWidth = getCombinedUploadProgressBarWidth(barText);
 
-    wrapper.style.opacity = "1";
+    wrapper.style.opacity = uploads.size > 0 ? "1" : "0";
     bar.style.width = `${barWidth}px`;
     inner.style.width = `${percent}%`;
     text.textContent = barText;
     sizeLabel.textContent = sizeText;
-
-    if (allDone) {
-      setTimeout(() => {
-        wrapper.style.opacity = "0";
-        setTimeout(() => {
-          bar.style.width = `${DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH}px`;
-          inner.style.width = "0%";
-          text.textContent = "";
-          sizeLabel.textContent = "";
-          uploads.clear();
-        }, 150);
-      }, 800);
-    }
+    sizeLabel.style.display =
+      settings.uploadProgressTextMode === "percent" && settings.showUploadFileSize ? "" : "none";
   }
 
   function installUploadProgressPatchOnce() {
     if (NativeXHR.prototype.__ultremeUploadPatched) return;
     NativeXHR.prototype.__ultremeUploadPatched = true;
 
+    const xhrMeta = new WeakMap();
+    const originalOpen = NativeXHR.prototype.open;
+    const originalSend = NativeXHR.prototype.send;
+
     NativeXHR.prototype.open = function (method, url) {
+      const result = originalOpen.apply(this, arguments);
       try {
-        const m = String(method || "").toUpperCase();
-        const u = String(url || "");
-        const isUpload = m === "POST" && u.includes("/uploads");
-        __ultremeXhrMeta.set(this, { isUpload, hooked: false, id: null });
+        const path = new URL(url, W.location.href).pathname;
+        // EEPROM uses multipart /uploads; Misuzu sends a File to /_chat/attachments.
+        const isUpload = String(method).toUpperCase() === "POST" &&
+          /\/(?:uploads|_chat\/attachments)\/?$/.test(path);
+        xhrMeta.set(this, { isUpload, hooked: false });
       } catch {}
-      return __ultremeOrigOpen.apply(this, arguments);
+      return result;
     };
 
     NativeXHR.prototype.send = function () {
-      try {
-        const meta = __ultremeXhrMeta.get(this);
+      const meta = xhrMeta.get(this);
+      const body = arguments[0];
+      let cleanup = null;
 
-        if (enableUploadProgress && meta?.isUpload && !meta.hooked) {
-          meta.hooked = true;
-          meta.id = Math.random().toString(36).slice(2);
-          __ultremeXhrMeta.set(this, meta);
+      if (
+        settings.enableUploadProgress && meta?.isUpload && !meta.hooked &&
+        (body instanceof W.File || body instanceof W.FormData)
+      ) {
+        meta.hooked = true;
+        const id = W.crypto.randomUUID();
+        const listeners = new W.AbortController();
 
-          const label = getUploadLabel(arguments[0], meta.id);
-          if (uploadProgressDisplayMode === "combined") createProgressBar();
-          else createUploadPopup();
-          uploads.set(meta.id, {
-            loaded: 0,
-            total: 0,
-            done: false,
-            label,
-            dismissTimer: null,
-          });
-          refreshUploadProgressUI();
+        const label = getUploadLabel(body, id);
+        uploads.set(id, {
+          loaded: 0,
+          total: 0,
+          done: false,
+          label,
+          dismissTimer: null,
+        });
+        refreshUploadProgressUI();
 
-          if (this.upload && this.upload.addEventListener) {
-            this.upload.addEventListener("progress", (e) => {
-              if (e.lengthComputable) {
-                const current = uploads.get(meta.id) || {
-                  label,
-                  dismissTimer: null,
-                };
-                uploads.set(meta.id, {
-                  ...current,
-                  loaded: e.loaded,
-                  total: e.total,
-                  done: false,
-                });
-                refreshUploadProgressUI();
-              }
-            });
+        this.upload.addEventListener("progress", (e) => {
+          const current = uploads.get(id);
+          if (current && e.lengthComputable) {
+            current.loaded = e.loaded;
+            current.total = e.total;
+            refreshUploadProgressUI();
           }
+        }, { signal: listeners.signal });
 
-          this.addEventListener("loadend", () => {
-            const current = uploads.get(meta.id);
-            if (current) {
-              uploads.set(meta.id, { ...current, done: true });
+        this.addEventListener("loadend", () => {
+          listeners.abort();
+          const current = uploads.get(id);
+          if (current) {
+            current.done = true;
+            current.dismissTimer = setTimeout(() => {
+              uploads.delete(id);
               refreshUploadProgressUI();
-            }
-          });
-        }
-      } catch {}
+            }, 1200);
+            refreshUploadProgressUI();
+          }
+        }, { signal: listeners.signal });
+        cleanup = () => {
+          listeners.abort();
+          uploads.delete(id);
+          refreshUploadProgressUI();
+        };
+      }
 
-      return __ultremeOrigSend.apply(this, arguments);
+      try {
+        return originalSend.apply(this, arguments);
+      } catch (error) {
+        cleanup?.();
+        throw error;
+      }
     };
   }
 
@@ -677,7 +746,7 @@
   installUploadProgressPatchOnce();
 
   function addForumButton() {
-    if (!enableForumButton) return;
+    if (!settings.enableForumButton) return;
 
     const sidebarSelector = document.querySelector(".sidebar__selector");
     const firstButton = sidebarSelector?.querySelector(
@@ -732,7 +801,7 @@
   }
 
   function addJumpToBottomButton() {
-    if (!enableJumpToBottomButton) return;
+    if (!settings.enableJumpToBottomButton) return;
 
     const sidebarSelector = document.querySelector(".sidebar__selector");
     if (
@@ -845,7 +914,7 @@
 
   const parseQuoteHref = (href) => {
     const m = String(href || "").match(
-      /^#(\d{17})(?::([^:#\s]+))?(?::([^#\s]+))?$/,
+      /^#(\d+)(?::([^:#\s]+))?(?::([^#\s]+))?$/,
     );
     if (!m) return { messageId: null, authorId: null, avatarVersion: null };
     return {
@@ -856,10 +925,8 @@
   };
 
   const extractAvatarVersion = (msg) => {
-    const bg =
-      msg.querySelector(".message__avatar")?.style?.backgroundImage || "";
-    const m = bg.match(/[?&]ver=(\d+)/);
-    return m ? m[1] : null;
+    const src = msg.querySelector(".message__avatar img")?.src;
+    return src ? new URL(src, W.location.href).searchParams.get("ver") : null;
   };
 
   const VIDEO_EXTS = ["mp4", "webm", "ogg"];
@@ -1074,7 +1141,7 @@
       if (event.target?.closest?.(".umi-media-modal-toolbar")) return;
       if (
         event.target?.closest?.(
-          ".umi-media-modal-content img, .umi-media-modal-content video",
+          ".umi-media-modal-content img, .umi-media-modal-content video, .umi-media-modal-content audio",
         )
       )
         return;
@@ -1242,6 +1309,7 @@
     actions.append(view, upd);
 
     const dismiss = document.createElement("button");
+    dismiss.type = "button";
     dismiss.id = "ultreme-update-dismiss";
     dismiss.textContent = "×";
     dismiss.title = "Dismiss";
@@ -1350,7 +1418,7 @@
     }
 
     if (
-      !interceptNativeQuoteButton &&
+      !settings.interceptNativeQuoteButton &&
       t.matches("button.markup__button") &&
       t.textContent.trim().toLowerCase() === "quote"
     ) {
@@ -1358,10 +1426,14 @@
         const input = document.querySelector("textarea.input__text");
         if (input && selectedText) {
           const quoted = `[quote]${selectedText}[/quote]`;
-          input.value =
-            input.value.trim() === "[quote][/quote]"
-              ? quoted
-              : input.value + quoted;
+          const start = input.selectionStart;
+          const end = input.selectionEnd;
+          // The native button wraps the textarea selection before this handler.
+          const before = input.value.slice(0, start);
+          const after = input.value.slice(end);
+          input.value = before.endsWith("[quote]") && after.startsWith("[/quote]")
+            ? before + selectedText + after
+            : input.value + quoted;
           input.focus();
           selectedText = "";
           selectedQuoteData = null;
@@ -1375,7 +1447,7 @@
     (e) => {
       const t = e.target;
       if (!(t instanceof Element)) return;
-      if (!interceptNativeQuoteButton || !selectedQuoteData) return;
+      if (!settings.interceptNativeQuoteButton || !selectedQuoteData) return;
       if (
         !t.matches("button.markup__button") ||
         t.textContent.trim().toLowerCase() !== "quote"
@@ -1385,18 +1457,27 @@
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation?.();
-      document.dispatchEvent(new CustomEvent("ultreme:apply-selected-quote"));
+      applySelectedQuote?.();
     },
     true,
   );
 
-  W.addEventListener("umi:connect", () => {
-    const uid = W.Umi?.User?.getCurrentUser?.()?.id;
-    if (!uid) return;
+  let initialized = false;
+  const initialize = () => {
+    if (initialized || !W.Umi?.User?.getCurrentUser?.()?.id ||
+        !getMessagesContainer() || !document.querySelector("textarea.input__text")) return;
+    initialized = true;
+
+    const isOwnMessage = (msg) =>
+      msg.dataset.author === W.Umi?.User?.getCurrentUser?.()?.id;
+    const deleteMessage = (msg) => {
+      if (settings.enableDelete && isOwnMessage(msg))
+        W.Umi.Server.sendMessage(`/delete ${msg.dataset.id}`);
+    };
 
     runAutoUpdateCheckOnce();
 
-    document.body.dataset.ultremeQuoteBlocks = enableQuoteBlocks ? "1" : "0";
+    document.body.dataset.ultremeQuoteBlocks = settings.enableQuoteBlocks ? "1" : "0";
 
     const getRelativeTime = (dateString) => {
       if (!dateString) return "";
@@ -1417,10 +1498,9 @@
 
     const applyKonkira = (msg, userId, type) => {
       const u_state = konkiraStates.get(userId);
-      if (u_state) {
-        if (u_state.el && u_state.el.parentNode) {
-          u_state.el.remove();
-        }
+      if (u_state?.el.isConnected && u_state.el.dataset.created > msg.dataset.created) return;
+      if (u_state?.el.isConnected && u_state.el.dataset.created <= msg.dataset.created) {
+        u_state.el.remove();
         const n_cnt = u_state.cnt + 1;
         msg.classList.add("konkira-summary");
         msg.setAttribute("konkira-count", n_cnt);
@@ -1459,45 +1539,129 @@
       const style = document.createElement("style");
       style.id = cssID;
       style.textContent = `
+        #umi-menus-ultreme,
+        #quote-preview,
+        #ultreme-update-prompt,
+        #upload-progress-wrapper,
+        #upload-progress-popup,
+        #umi-media-modal,
+        .message-button-container,
+        .message__quote {
+          font-family: ${UI_FONT_FAMILY};
+        }
+        #umi-menus-ultreme input,
+        #umi-menus-ultreme select,
+        #umi-menus-ultreme button,
+        #quote-preview button,
+        #ultreme-update-prompt button,
+        .message-button-container button {
+          font-family: inherit;
+        }
+        /* Keep the quote wire format readable with Mami's new theme styles. */
+        .message__text {
+          --theme-colour-message-time-colour: GrayText;
+        }
+        .message.ultreme-has-actions {
+          flex-wrap: wrap;
+        }
+        .message.ultreme-has-actions .message__container {
+          flex: 1 1 min(12em, calc(100% - 3.5em));
+          min-width: min(12em, calc(100% - 3.5em));
+        }
         .message .message-button-container {
-          position: absolute;
-          top: 50%;
-          right: 10px;
-          transform: translateY(-50%);
           display: flex;
-          gap: 4px;
+          flex: 0 1 auto;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+          align-self: center;
+          max-width: 100%;
+          margin-left: auto;
+          gap: 0.25em;
         }
         .message .quote-button,
         .message .delete-button,
         .message .goto-button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 1.846154em;
+          min-height: 1.846154em;
           opacity: 0;
-          border: none;
+          border: 1px solid transparent;
           border-radius: 2px;
-          padding: 1px 6px;
-          font-size: 13px;
+          padding: 0;
+          font-size: max(13px, 0.8125em);
+          line-height: 1.2;
+          gap: 0.35em;
           cursor: pointer;
-          background: var(--theme-colour-input-menu-button);
-          color: var(--theme-colour-main-colour);
+          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+          color: var(--theme-colour-main-colour, CanvasText);
           transition: opacity 0.15s ease;
+        }
+        .message-button-label {
+          display: none;
+          white-space: nowrap;
+        }
+        body[data-ultreme-button-content="text"] .message-button-container i {
+          display: none;
+        }
+        body[data-ultreme-button-content="text"] .message-button-label,
+        body[data-ultreme-button-content="both"] .message-button-label {
+          display: inline;
+        }
+        body[data-ultreme-button-content="text"] .message-button-container button,
+        body[data-ultreme-button-content="both"] .message-button-container button {
+          padding: 0.2em 0.5em;
+        }
+        body[data-ultreme-button-appearance="outlined"] .message-button-container button {
+          border-color: var(--ultreme-action-accent, Highlight);
+        }
+        body[data-ultreme-button-appearance="filled"] .message .message-button-container button {
+          background: var(--ultreme-action-accent, Highlight);
+          border: none;
+          outline: none;
+          color: var(--ultreme-action-foreground, HighlightText);
+        }
+        body[data-ultreme-button-appearance="filled"] .message-button-container button:hover,
+        body[data-ultreme-button-appearance="filled"] .message-button-container button:focus-visible {
+          filter: brightness(1.15);
+        }
+        .message-button-container button:focus-visible {
+          outline: 2px solid var(--ultreme-action-accent, Highlight);
+          outline-offset: 2px;
         }
         .message .quote-button:hover,
         .message .delete-button:hover,
         .message .goto-button:hover {
-          background: var(--theme-colour-input-menu-button-hover);
+          background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
         }
         .message .quote-button:active,
         .message .delete-button:active,
         .message .goto-button:active {
-          background: var(--theme-colour-input-menu-button-active);
+          background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
         }
         .message:hover .quote-button,
         .message:hover .delete-button,
-        .message:hover .goto-button {
+        .message:hover .goto-button,
+        .message:focus-within .message-button-container button,
+        body[data-ultreme-button-visibility="always"] .message-button-container button {
           opacity: 1;
         }
+        @media (hover: none) {
+          .message .message-button-container button { opacity: 1; }
+          body[data-ultreme-button-visibility="hover"] .message .message-button-container {
+            opacity: 0;
+            pointer-events: none;
+          }
+          body[data-ultreme-button-visibility="hover"] .message.ultreme-actions-open .message-button-container,
+          body[data-ultreme-button-visibility="hover"] .message .message-button-container:focus-within {
+            opacity: 1;
+            pointer-events: auto;
+          }
+        }
         #quote-preview {
-          background: var(--theme-colour-input-background);
-          border: 1px solid var(--theme-colour-settings-input-border);
+          background: var(--theme-colour-input-background, light-dark(#eee, #111));
+          border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
           padding: 6px 10px;
           font-size: 13px;
           margin: 4px -1px;
@@ -1517,18 +1681,18 @@
           font-size: 12px;
           padding: 1px 4px;
           border-radius: 2px;
-          background: var(--theme-colour-input-menu-button);
+          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
         }
         #quote-preview .ultreme-preview-media {
-          color: var(--theme-colour-main-accent);
+          color: var(--theme-colour-main-accent, #8559a5);
           text-decoration: none;
           cursor: pointer;
         }
         #quote-preview .ultreme-preview-spoiler {
           padding: 0 4px;
           border-radius: 2px;
-          background: var(--theme-colour-input-menu-button);
-          color: var(--theme-colour-main-colour);
+          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+          color: var(--theme-colour-main-colour, CanvasText);
           filter: brightness(0.8);
         }
         #cancel-quote {
@@ -1536,7 +1700,7 @@
           margin-left: 6px;
           background: none;
           border: none;
-          color: var(--theme-colour-main-colour);
+          color: var(--theme-colour-main-colour, CanvasText);
           cursor: pointer;
           font-weight: bold;
           padding: 0 6px;
@@ -1544,8 +1708,8 @@
           align-self: flex-start;
         }
         #ultreme-update-prompt {
-          background: var(--theme-colour-input-background);
-          border: 1px solid var(--theme-colour-settings-input-border);
+          background: var(--theme-colour-input-background, light-dark(#eee, #111));
+          border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
           padding: 6px 10px;
           font-size: 13px;
           margin: 4px -1px;
@@ -1570,21 +1734,21 @@
           padding: 1px 6px;
           font-size: 13px;
           cursor: pointer;
-          background: var(--theme-colour-input-menu-button);
-          color: var(--theme-colour-main-colour);
+          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+          color: var(--theme-colour-main-colour, CanvasText);
           text-decoration: none;
         }
         .ultreme-update-actions a:hover {
-          background: var(--theme-colour-input-menu-button-hover);
+          background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
         }
         .ultreme-update-actions a:active {
-          background: var(--theme-colour-input-menu-button-active);
+          background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
         }
         #ultreme-update-dismiss {
           flex: 0 0 auto;
           background: none;
           border: none;
-          color: var(--theme-colour-main-colour);
+          color: var(--theme-colour-main-colour, CanvasText);
           cursor: pointer;
           font-weight: bold;
           padding: 0 6px;
@@ -1599,7 +1763,7 @@
         }
         @keyframes blinkOutline {
           0%   { outline-color: transparent; }
-          50%  { outline-color: var(--theme-colour-main-accent); }
+          50%  { outline-color: var(--theme-colour-main-accent, #8559a5); }
           100% { outline-color: transparent; }
         }
         .message__time,
@@ -1612,10 +1776,11 @@
         }
         .message.selected-quote::after {
           content: "";
+          pointer-events: none;
           position: absolute;
           inset: 0;
           opacity: 0.1;
-          background-color: color-mix(in srgb, var(--theme-colour-main-accent) 50%, black);
+          background-color: color-mix(in srgb, var(--theme-colour-main-accent, #8559a5) 50%, black);
         }
         .message__container.has-inline-quote {
           display: flex;
@@ -1628,6 +1793,8 @@
           flex: 1 1 auto;
           display: flex;
           flex-direction: column;
+          min-width: 0;
+          max-width: 100%;
         }
         .message.message--first .message__container.has-inline-quote {
           flex-direction: column;
@@ -1645,18 +1812,20 @@
           padding: 4px 8px;
           font-size: 12px;
           border-radius: 3px;
-          border: 2px solid var(--theme-colour-settings-input-border);
-          background: var(--theme-colour-input-background);
+          border: 2px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
+          background: var(--theme-colour-input-background, light-dark(#eee, #111));
           cursor: pointer;
           opacity: 0.97;
           display: flex;
           align-items: flex-start;
+          align-self: flex-start;
+          width: fit-content;
           gap: 6px;
           max-width: 100%;
           box-sizing: border-box;
         }
         .message__quote:hover {
-          border-color: var(--theme-colour-main-accent);
+          border-color: var(--theme-colour-main-accent, #8559a5);
         }
         .message__quote-avatar {
           width: 20px;
@@ -1680,12 +1849,12 @@
           word-break: break-word;
         }
         .message__quote-text a.message__quote-media {
-          color: var(--theme-colour-main-accent);
+          color: var(--theme-colour-main-accent, #8559a5);
           text-decoration: none;
           cursor: pointer;
         }
         .message__quote-text .message__quote-embed-toggle {
-          color: var(--theme-colour-main-accent);
+          color: var(--theme-colour-main-accent, #8559a5);
           text-decoration: none;
           cursor: pointer;
         }
@@ -1707,14 +1876,14 @@
           display: block;
           margin-top: 2px;
         }
-        #umi-messages.chat--compact .message__container.has-inline-quote {
+        body.compact #umi-messages .message__container.has-inline-quote {
           display: grid !important;
           grid-template-columns: max-content minmax(0, 1fr);
           align-items: baseline;
           column-gap: 4px;
           min-width: 0;
         }
-        #umi-messages.chat--compact .message__container.has-inline-quote .message__meta {
+        body.compact #umi-messages .message__container.has-inline-quote .message__meta {
           display: inline-flex !important;
           align-items: baseline;
           grid-column: 1;
@@ -1722,17 +1891,17 @@
           margin-right: 0;
           margin-bottom: 0 !important;
         }
-        #umi-messages.chat--compact .message__container.has-inline-quote .message__time {
+        body.compact #umi-messages .message__container.has-inline-quote .message__time {
           order: 1;
           margin-right: 3px;
         }
-        #umi-messages.chat--compact .message__container.has-inline-quote .message__user {
+        body.compact #umi-messages .message__container.has-inline-quote .message__user {
           order: 2;
         }
-        #umi-messages.chat--compact .message__container.has-inline-quote .message__body {
+        body.compact #umi-messages .message__container.has-inline-quote .message__body {
           display: contents !important;
         }
-        #umi-messages.chat--compact .message__quote {
+        body.compact #umi-messages .message__quote {
           display: inline-flex !important;
           align-items: center;
           grid-column: 1 / -1;
@@ -1740,38 +1909,38 @@
           justify-self: start;
           vertical-align: baseline;
           gap: 4px;
-          max-width: min(60vw, 380px);
+          max-width: min(100%, 60vw, 380px);
           margin: 0 0 2px 0 !important;
           padding: 2px 5px;
           border-width: 1px;
           font-size: 12px;
         }
-        #umi-messages.chat--compact .message__quote-avatar {
+        body.compact #umi-messages .message__quote-avatar {
           display: none;
         }
-        #umi-messages.chat--compact .message__quote-body {
+        body.compact #umi-messages .message__quote-body {
           display: flex;
           align-items: baseline;
           gap: 4px;
           min-width: 0;
         }
-        #umi-messages.chat--compact .message__quote-header {
+        body.compact #umi-messages .message__quote-header {
           flex: 0 1 auto;
           max-width: max-content;
-          min-width: fit-content;
+          min-width: 0;
           margin-bottom: 0;
           overflow: hidden;
           text-overflow: clip;
         }
-        #umi-messages.chat--compact .message__quote-header::after {
+        body.compact #umi-messages .message__quote-header::after {
           content: " @ " attr(data-quote-time) ":";
           color: var(--theme-colour-message-time-colour);
           font-weight: normal;
         }
-        #umi-messages.chat--compact .message__quote-header span {
+        body.compact #umi-messages .message__quote-header span {
           display: none;
         }
-        #umi-messages.chat--compact .message__quote-text {
+        body.compact #umi-messages .message__quote-text {
           flex: 1 1 auto;
           min-width: 0;
           white-space: nowrap;
@@ -1779,7 +1948,7 @@
           text-overflow: ellipsis;
           word-break: normal;
         }
-        #umi-messages.chat--compact .message__quote + .message__text {
+        body.compact #umi-messages .message__quote + .message__text {
           display: inline-block !important;
           grid-column: 2;
           grid-row: 2;
@@ -1789,7 +1958,7 @@
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        #umi-messages.chat--compact .message__text q.ultreme-inline-quote {
+        body.compact #umi-messages .message__text q.ultreme-inline-quote {
           display: inline-block;
           max-width: min(55vw, 360px);
           margin-right: 4px;
@@ -1798,43 +1967,43 @@
           text-overflow: ellipsis;
           vertical-align: bottom;
         }
-        #umi-messages.chat--compact .message__text i.ultreme-inline-quote span:not(:first-child) {
+        body.compact #umi-messages .message__text i.ultreme-inline-quote span:not(:first-child) {
           display: none;
         }
-        #umi-messages.chat--compact .message__text q.ultreme-inline-quote br,
-        #umi-messages.chat--compact .message__text > br.ultreme-inline-quote,
-        #umi-messages.chat--compact .message__text > span.ultreme-inline-quote {
+        body.compact #umi-messages .message__text q.ultreme-inline-quote br,
+        body.compact #umi-messages .message__text > br.ultreme-inline-quote,
+        body.compact #umi-messages .message__text > span.ultreme-inline-quote {
           display: none;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__container.has-inline-quote {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__container.has-inline-quote {
           display: flex !important;
           flex-direction: row !important;
           align-items: baseline;
           min-width: 0;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__container.has-inline-quote .message__meta {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__container.has-inline-quote .message__meta {
           display: inline-flex !important;
           align-items: baseline;
           flex: 0 0 auto;
           margin-right: 4px;
           margin-bottom: 0 !important;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__container.has-inline-quote .message__body {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__container.has-inline-quote .message__body {
           display: inline !important;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__quote {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__quote {
           display: none !important;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__quote + .message__text {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__quote + .message__text {
           display: inline !important;
           white-space: nowrap;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text i.ultreme-inline-quote,
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text i.ultreme-inline-quote span,
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text q.ultreme-inline-quote {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text i.ultreme-inline-quote,
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text i.ultreme-inline-quote span,
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text q.ultreme-inline-quote {
           display: inline !important;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text q.ultreme-inline-quote {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text q.ultreme-inline-quote {
           max-width: none;
           margin: 0 0 0 2px;
           white-space: inherit;
@@ -1842,13 +2011,13 @@
           text-overflow: clip;
           vertical-align: baseline;
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text q.ultreme-inline-quote::after {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text q.ultreme-inline-quote::after {
           content: close-quote " ";
         }
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text a.ultreme-inline-quote,
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text q.ultreme-inline-quote br,
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text > br.ultreme-inline-quote,
-        body[data-ultreme-quote-blocks="0"] #umi-messages.chat--compact .message__text > span.ultreme-inline-quote {
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text a.ultreme-inline-quote,
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text q.ultreme-inline-quote br,
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text > br.ultreme-inline-quote,
+        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text > span.ultreme-inline-quote {
           display: none !important;
         }
         #umi-media-modal {
@@ -1877,6 +2046,7 @@
           justify-content: flex-start;
         }
         #umi-media-modal .umi-media-modal-toolbar {
+          color-scheme: dark;
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -1891,9 +2061,9 @@
           backdrop-filter: blur(2px);
         }
         #umi-media-modal .umi-media-modal-title {
-          color: var(--theme-colour-main-colour);
+          color: var(--theme-colour-main-colour, CanvasText);
           font-size: 13px;
-          font-family: Tahoma, Geneva, Arial, Helvetica, sans-serif;
+          font-family: inherit;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -1912,18 +2082,18 @@
           padding: 3px 8px;
           font-size: 13px;
           cursor: pointer;
-          background: var(--theme-colour-input-menu-button);
-          color: var(--theme-colour-main-colour);
+          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+          color: var(--theme-colour-main-colour, CanvasText);
           text-decoration: none;
-          font-family: Tahoma, Geneva, Arial, Helvetica, sans-serif;
+          font-family: inherit;
         }
         #umi-media-modal .umi-media-modal-download:hover,
         #umi-media-modal .umi-media-modal-close:hover {
-          background: var(--theme-colour-input-menu-button-hover);
+          background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
         }
         #umi-media-modal .umi-media-modal-download:active,
         #umi-media-modal .umi-media-modal-close:active {
-          background: var(--theme-colour-input-menu-button-active);
+          background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
         }
         #umi-media-modal .umi-media-modal-content {
           width: 100%;
@@ -1953,21 +2123,7 @@
         .setting__hint {
           margin-bottom: 4px;
           font-size: 12px;
-          color: var(--theme-colour-message-time-colour);
-        }
-        .ultreme-setting-group-title {
-          margin: 10px 0 4px;
-          font-size: 12px;
-          font-weight: bold;
-          color: var(--theme-colour-main-colour);
-        }
-        .ultreme-setting-group {
-          padding-left: 8px;
-          border-left: 2px solid var(--theme-colour-settings-input-border);
-          margin-bottom: 8px;
-        }
-        .ultreme-setting-group .setting__container:last-child {
-          margin-bottom: 0;
+          color: var(--theme-colour-message-time-colour, GrayText);
         }
         .ultreme-setting-disabled {
           opacity: 0.55;
@@ -1979,14 +2135,13 @@
           font-weight: bold;
           letter-spacing: 0.04em;
           text-transform: uppercase;
-          color: var(--theme-colour-message-time-colour);
+          color: var(--theme-colour-message-time-colour, GrayText);
         }
-        .ultreme-setting-subsection {
-          padding-left: 12px;
-          margin-bottom: 6px;
-        }
-        .ultreme-setting-subsection .setting__container:last-child {
-          margin-bottom: 0;
+        .ultreme-setting-field {
+          border: none;
+          padding: 0;
+          margin: 6px 0;
+          min-width: 0;
         }
         #upload-progress-popup {
           position: fixed;
@@ -2001,14 +2156,14 @@
           transition: opacity 0.15s ease;
         }
         .upload-progress-item {
-          background: color-mix(in srgb, var(--theme-colour-input-background) 92%, black);
-          border: 1px solid var(--theme-colour-settings-input-border);
+          background: color-mix(in srgb, var(--theme-colour-input-background, light-dark(#eee, #111)) 92%, black);
+          border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
           box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
           border-radius: 4px;
           padding: 10px;
           pointer-events: auto;
           backdrop-filter: blur(6px);
-          font-family: Tahoma, Geneva, Arial, Helvetica, sans-serif;
+          font-family: inherit;
           opacity: 1;
           transition: opacity 0.15s ease;
         }
@@ -2027,7 +2182,7 @@
           flex: 1 1 auto;
           font-size: 13px;
           font-weight: bold;
-          color: var(--theme-colour-main-colour);
+          color: var(--theme-colour-main-colour, CanvasText);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -2044,8 +2199,8 @@
           height: 10px;
           overflow: hidden;
           border-radius: 999px;
-          background: var(--theme-colour-input-menu-button);
-          box-shadow: 0 0 0 1px var(--theme-colour-input-menu-box-shadow);
+          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+          box-shadow: 0 0 0 1px var(--theme-colour-input-menu-box-shadow, light-dark(#ccc, #444));
           margin-bottom: 8px;
         }
         .upload-progress-item__fill {
@@ -2053,16 +2208,16 @@
           width: 0%;
           background: linear-gradient(
             90deg,
-            var(--theme-colour-main-accent),
-            var(--theme-colour-input-menu-button-hover)
+            var(--theme-colour-main-accent, #8559a5),
+            var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333))
           );
           transition: width 0.15s ease;
         }
         .upload-progress-item.is-done .upload-progress-item__fill {
           background: linear-gradient(
             90deg,
-            color-mix(in srgb, var(--theme-colour-main-accent) 70%, white),
-            var(--theme-colour-main-accent)
+            color-mix(in srgb, var(--theme-colour-main-accent, #8559a5) 70%, white),
+            var(--theme-colour-main-accent, #8559a5)
           );
         }
         .message.konkira-summary .connection-badge {
@@ -2088,6 +2243,7 @@
 
         const span = document.createElement("span");
         const cancel = document.createElement("button");
+        cancel.type = "button";
         cancel.id = "cancel-quote";
         cancel.textContent = "×";
         cancel.title = "Cancel quote";
@@ -2105,7 +2261,7 @@
         const time = getRelativeTime(created);
         const displayHtml = formatQuotePreviewHtml(msg);
         const showColor = color || DEFAULT_NAME_COLOR;
-        const nameHtml = `<b style="color:${showColor};">${name}</b>`;
+        const nameHtml = `<b style="color:${escapeHtml(showColor)};">${escapeHtml(name)}</b>`;
         span.innerHTML = `Quoting ${nameHtml} @ ${time} — ${displayHtml}`;
       };
 
@@ -2130,8 +2286,8 @@
     };
 
     const clearSelectedMessage = () => {
-      const messages = getVisibleMessages();
-      for (const m of messages) m.classList.remove("selected-quote");
+      document.querySelectorAll(".message.selected-quote")
+        .forEach((m) => m.classList.remove("selected-quote"));
       selectedMessageIndex = -1;
     };
 
@@ -2143,7 +2299,7 @@
         selectedMessageIndex = index;
         const msg = messages[index];
         msg.classList.add("selected-quote");
-        const messageData = extractMessageData(msg);
+        const messageData = buildQuoteDataFromMessageElement(msg);
         if (messageData) applyQuote(messageData);
         return;
       }
@@ -2151,17 +2307,22 @@
       clearPendingQuote({ clearSelection: false });
     };
 
-    const extractMessageData = (msg) => buildQuoteDataFromMessageElement(msg);
-
     const appendMessageButton = (
       container,
-      { className, text, title, visible = true, onClick, html = false },
+      { className, icon, text, title, visible = true, onClick },
     ) => {
       const button = document.createElement("button");
       button.className = className;
-      if (html) button.innerHTML = text;
-      else button.textContent = text;
+      button.type = "button";
       button.title = title;
+      button.setAttribute("aria-label", title);
+      const glyph = document.createElement("i");
+      glyph.className = `fas fa-${icon}`;
+      glyph.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.className = "message-button-label";
+      label.textContent = text;
+      button.append(glyph, label);
       button.onclick = onClick;
       button.style.display = visible ? "" : "none";
       container.appendChild(button);
@@ -2186,6 +2347,7 @@
         authorId: quotedAuthorIdFromHref,
         avatarVersion: quotedAvatarVersion,
       } = parseQuoteHref(href);
+      if (!targetId) return;
 
       const arrowSpan = [...textEl.querySelectorAll("span")].find((s) =>
         (s.textContent || "").includes("└"),
@@ -2278,9 +2440,9 @@
       header.className = "message__quote-header";
       header.dataset.quoteTime = relTime;
       const showColor = quotedColor || DEFAULT_NAME_COLOR;
-      header.innerHTML = `<b style="color:${showColor};">${quotedName}</b>${
+      header.innerHTML = `<b style="color:${escapeHtml(showColor)};">${escapeHtml(quotedName)}</b>${
         relTime
-          ? ` <span style="color:var(--theme-colour-message-time-colour);">@ ${relTime}</span>`
+          ? ` <span style="color:var(--theme-colour-message-time-colour);">@ ${escapeHtml(relTime)}</span>`
           : ""
       }`;
 
@@ -2473,520 +2635,139 @@
           return body;
         };
 
-        const addHint = (body, text) => {
-          const hint = document.createElement("div");
-          hint.className = "setting__hint";
-          hint.textContent = text;
-          body.appendChild(hint);
-        };
-
-        const createSettingGroup = (body, titleText, hintText = "") => {
-          const title = document.createElement("div");
-          title.className = "ultreme-setting-group-title";
-          title.textContent = titleText;
-          body.appendChild(title);
-
-          const group = document.createElement("div");
-          group.className = "ultreme-setting-group";
-          body.appendChild(group);
-
-          if (hintText) addHint(group, hintText);
-          return group;
-        };
-
-        const createSettingSubsection = (body, titleText) => {
-          const wrap = document.createElement("div");
-
-          const title = document.createElement("div");
-          title.className = "ultreme-setting-subtitle";
-          title.textContent = titleText;
-
-          const group = document.createElement("div");
-          group.className = "ultreme-setting-subsection";
-
-          wrap.append(title, group);
-          body.appendChild(wrap);
-          return { wrap, group };
-        };
-
-        const addCheckbox = (body, cls, labelText) => {
-          const container = document.createElement("div");
-          container.className =
-            "setting__container setting__container--checkbox";
-
-          const label = document.createElement("label");
-          label.className = "setting__label";
-
-          const input = document.createElement("input");
-          input.type = "checkbox";
-          input.className = `setting__input ${cls}`;
-
-          const text = document.createElement("div");
-          text.textContent = labelText;
-
-          label.append(input, text);
-          container.appendChild(label);
-          body.appendChild(container);
-          return input;
-        };
-
-        const addRadio = (body, groupName, cls, labelText) => {
-          const container = document.createElement("div");
-          container.className =
-            "setting__container setting__container--checkbox";
-
-          const label = document.createElement("label");
-          label.className = "setting__label";
-
-          const input = document.createElement("input");
-          input.type = "radio";
-          input.name = groupName;
-          input.className = `setting__input ${cls}`;
-
-          const text = document.createElement("div");
-          text.textContent = labelText;
-
-          label.append(input, text);
-          container.appendChild(label);
-          body.appendChild(container);
-          return input;
-        };
-
-        const bindCheckboxSetting = (
-          input,
-          key,
-          getValue,
-          setValue,
-          onChange,
-        ) => {
-          input.checked = getValue();
-          input.addEventListener("change", () => {
-            const nextValue = input.checked;
-            setValue(nextValue);
-            saveBoolSetting(key, nextValue);
-            onChange?.(nextValue);
-          });
-        };
-
         const createButtonRow = (body, text, onClick) => {
           const wrap = document.createElement("div");
           wrap.className = "setting__container setting__container--button";
-          wrap.innerHTML = `<label class="setting__label"><button type="button" class="setting__input"></button></label>`;
-          const btn = wrap.querySelector("button");
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "setting__input";
           btn.textContent = text;
           btn.addEventListener("click", onClick);
+          wrap.appendChild(btn);
           body.appendChild(wrap);
           return { wrap, btn };
         };
 
-        const bindRadioSetting = (
-          inputs,
-          key,
-          getValue,
-          setValue,
-          onChange,
-        ) => {
-          const sync = () => {
-            const value = getValue();
-            for (const [radioValue, input] of Object.entries(inputs))
-              input.checked = value === radioValue;
-          };
-
-          sync();
-
-          for (const [radioValue, input] of Object.entries(inputs)) {
-            input.addEventListener("change", () => {
-              if (!input.checked) return;
-              setValue(radioValue);
-              saveStringSetting(key, radioValue);
-              onChange?.(radioValue);
-            });
-          }
-        };
-
-        const quotingBody = createCategory("Quoting");
-        const deletingBody = createCategory("Deleting");
-        const miscBody = createCategory("Misc.");
-        const aboutBody = createCategory("About");
-        aboutBody.classList.add("ultreme-about");
-
-        const showQuoteButtonInput = addCheckbox(
-          quotingBody,
-          "js-ultreme-showQuoteButton",
-          'Show "Quote" button',
-        );
-        const showGotoButtonInput = addCheckbox(
-          quotingBody,
-          "js-ultreme-showGotoButton",
-          'Show "Go to quote" button',
-        );
-        const enableQuoteBlocksInput = addCheckbox(
-          quotingBody,
-          "js-ultreme-enableQuoteBlocks",
-          "Render quotes as blocks",
-        );
-        const interceptNativeQuoteButtonInput = addCheckbox(
-          quotingBody,
-          "js-ultreme-interceptNativeQuoteButton",
-          'Rich partial quotes with bbcode "Quote" button',
-        );
-
-        addHint(
-          deletingBody,
-          "Hold shift and click your message's timestamp to delete",
-        );
-        const enableDeleteInput = addCheckbox(
-          deletingBody,
-          "js-ultreme-enableDelete",
-          "Enable Delete",
-        );
-        const showDeleteButtonInput = addCheckbox(
-          deletingBody,
-          "js-ultreme-showDeleteButton",
-          "Show Delete button",
-        );
-        const enableKonkiraInput = addCheckbox(
-          miscBody,
-          "js-ultreme-enableKonkira",
-          "Compact join/leave messages",
-        );
-
-        const uploadGroup = createSettingGroup(miscBody, "Upload Progress");
-        const enableUploadProgressInput = addCheckbox(
-          uploadGroup,
-          "js-ultreme-enableUploadProgress",
-          "Show upload progress bar",
-        );
-        const uploadDisplaySection = createSettingSubsection(
-          uploadGroup,
-          "Display",
-        );
-        const uploadDisplayPerFileInput = addRadio(
-          uploadDisplaySection.group,
-          "ultreme-upload-progress-display-mode",
-          "js-ultreme-uploadProgressDisplayPerFile",
-          "Per-file popup",
-        );
-        const uploadDisplayCombinedInput = addRadio(
-          uploadDisplaySection.group,
-          "ultreme-upload-progress-display-mode",
-          "js-ultreme-uploadProgressDisplayCombined",
-          "Combined bar",
-        );
-        const uploadInsideSection = createSettingSubsection(
-          uploadGroup,
-          "Inside Bar Text",
-        );
-        const uploadProgressPercentInput = addRadio(
-          uploadInsideSection.group,
-          "ultreme-upload-progress-text-mode",
-          "js-ultreme-uploadProgressPercent",
-          "Percentage",
-        );
-        const uploadProgressSizeInput = addRadio(
-          uploadInsideSection.group,
-          "ultreme-upload-progress-text-mode",
-          "js-ultreme-uploadProgressSize",
-          "File size",
-        );
-        const uploadProgressBothInput = addRadio(
-          uploadInsideSection.group,
-          "ultreme-upload-progress-text-mode",
-          "js-ultreme-uploadProgressBoth",
-          "Both",
-        );
-        const uploadOutsideSection = createSettingSubsection(
-          uploadGroup,
-          "Outside Bar Text",
-        );
-        const showUploadFileSizeInput = addCheckbox(
-          uploadOutsideSection.group,
-          "js-ultreme-showUploadFileSize",
-          "File size",
-        );
-
-        const navigationGroup = createSettingGroup(miscBody, "Navigation");
-        const enableForumButtonInput = addCheckbox(
-          navigationGroup,
-          "js-ultreme-enableForumButton",
-          "Show Flashii logo (Go to Forum) button",
-        );
-        const enableJumpToBottomButtonInput = addCheckbox(
-          navigationGroup,
-          "js-ultreme-enableJumpToBottomButton",
-          "Show Jump to bottom button",
-        );
-
-        const syncUploadFileSizeControls = () => {
-          const sizeLabel = document.getElementById("upload-progress-size");
-          const useCombinedBar =
-            enableUploadProgress && uploadProgressDisplayMode === "combined";
-          const disableUploadDisplayControls = !enableUploadProgress;
-          const disableUploadTextControls = !useCombinedBar;
-          const disableSideSize =
-            !useCombinedBar || uploadProgressTextMode !== "percent";
-          const sideSizeLabel =
-            showUploadFileSizeInput.closest(".setting__label");
-          const displayModeLabels = [
-            uploadDisplayCombinedInput.closest(".setting__label"),
-            uploadDisplayPerFileInput.closest(".setting__label"),
-          ];
-          const uploadTextLabels = [
-            uploadProgressPercentInput.closest(".setting__label"),
-            uploadProgressSizeInput.closest(".setting__label"),
-            uploadProgressBothInput.closest(".setting__label"),
-          ];
-
-          for (const input of [
-            uploadDisplayCombinedInput,
-            uploadDisplayPerFileInput,
-          ]) {
-            input.disabled = disableUploadDisplayControls;
-          }
-          for (const label of displayModeLabels) {
-            label?.classList.toggle(
-              "ultreme-setting-disabled",
-              disableUploadDisplayControls,
-            );
-          }
-          for (const input of [
-            uploadProgressPercentInput,
-            uploadProgressSizeInput,
-            uploadProgressBothInput,
-          ]) {
-            input.disabled = disableUploadTextControls;
-          }
-          for (const label of uploadTextLabels) {
-            label?.classList.toggle(
-              "ultreme-setting-disabled",
-              disableUploadTextControls,
-            );
-          }
-
-          uploadInsideSection.wrap.style.display =
-            uploadProgressDisplayMode === "combined" ? "" : "none";
-          uploadOutsideSection.wrap.style.display =
-            uploadProgressDisplayMode === "combined" ? "" : "none";
-
-          if (!enableUploadProgress && uploadProgressTextMode !== "percent") {
-            uploadProgressTextMode = "percent";
-            saveStringSetting("uploadProgressTextMode", uploadProgressTextMode);
-            uploadProgressPercentInput.checked = true;
-          }
-
-          if (
-            (!enableUploadProgress ||
-              (useCombinedBar && uploadProgressTextMode !== "percent")) &&
-            showUploadFileSize
-          ) {
-            showUploadFileSize = false;
-            saveBoolSetting("showUploadFileSize", false);
-            showUploadFileSizeInput.checked = false;
-          }
-
-          showUploadFileSizeInput.disabled = disableSideSize;
-          sideSizeLabel?.classList.toggle(
-            "ultreme-setting-disabled",
-            disableSideSize,
-          );
-
-          if (sizeLabel)
-            sizeLabel.style.display =
-              useCombinedBar && !disableSideSize && showUploadFileSize
-                ? ""
-                : "none";
-        };
-
-        bindCheckboxSetting(
-          showQuoteButtonInput,
-          "showQuoteButton",
-          () => showQuoteButton,
-          (v) => {
-            showQuoteButton = v;
-          },
-          (v) => {
-            document
-              .querySelectorAll(".quote-button")
-              .forEach((btn) => (btn.style.display = v ? "" : "none"));
-          },
-        );
-
-        bindCheckboxSetting(
-          showGotoButtonInput,
-          "showGotoButton",
-          () => showGotoButton,
-          (v) => {
-            showGotoButton = v;
-          },
-          (v) => {
-            document
-              .querySelectorAll(".goto-button")
-              .forEach((btn) => (btn.style.display = v ? "" : "none"));
-          },
-        );
-
-        bindCheckboxSetting(
-          enableQuoteBlocksInput,
-          "enableQuoteBlocks",
-          () => enableQuoteBlocks,
-          (v) => {
-            enableQuoteBlocks = v;
-          },
-          (v) => {
-            document.body.dataset.ultremeQuoteBlocks = v ? "1" : "0";
-          },
-        );
-
-        bindCheckboxSetting(
-          interceptNativeQuoteButtonInput,
-          "interceptNativeQuoteButton",
-          () => interceptNativeQuoteButton,
-          (v) => {
-            interceptNativeQuoteButton = v;
-          },
-        );
-
-        const syncDeleteButtons = () => {
-          document.querySelectorAll(".delete-button").forEach((btn) => {
-            btn.style.display = enableDelete && showDeleteButton ? "" : "none";
+        const setButtonsVisible = (selector, visible) => {
+          document.querySelectorAll(selector).forEach(button => {
+            button.style.display = visible ? "" : "none";
           });
         };
-
-        bindCheckboxSetting(
-          enableDeleteInput,
-          "enableDelete",
-          () => enableDelete,
-          (v) => {
-            enableDelete = v;
+        const syncDeleteButtons = () => setButtonsVisible(".delete-button",
+          settings.enableDelete && settings.showDeleteButton);
+        const settingEffects = {
+          "messageButtonContent": applyMessageButtonSettings,
+          "messageButtonVisibility": applyMessageButtonSettings,
+          "messageButtonAppearance": applyMessageButtonSettings,
+          "showQuoteButton": () => setButtonsVisible(".quote-button", settings.showQuoteButton),
+          "showGotoButton": () => setButtonsVisible(".goto-button", settings.showGotoButton),
+          "enableQuoteBlocks": () => {
+            document.body.dataset.ultremeQuoteBlocks = settings.enableQuoteBlocks ? "1" : "0";
           },
-          syncDeleteButtons,
-        );
-
-        bindCheckboxSetting(
-          showDeleteButtonInput,
-          "showDeleteButton",
-          () => showDeleteButton,
-          (v) => {
-            showDeleteButton = v;
+          "enableDelete": syncDeleteButtons,
+          "showDeleteButton": syncDeleteButtons,
+          "enableKonkira": () => {
+            if (!settings.enableKonkira) konkiraStates.clear();
           },
-          syncDeleteButtons,
-        );
-
-        bindCheckboxSetting(
-          enableKonkiraInput,
-          "enableKonkira",
-          () => enableKonkira,
-          (v) => {
-            enableKonkira = v;
-          },
-          (v) => {
-            if (!v) konkiraStates.clear();
-          },
-        );
-
-        bindCheckboxSetting(
-          enableUploadProgressInput,
-          "enableUploadProgress",
-          () => enableUploadProgress,
-          (v) => {
-            enableUploadProgress = v;
-          },
-          (v) => {
-            if (!v) {
-              disableUploadProgressUI();
-            } else {
-              refreshUploadProgressUI();
-              showUploadProgressPreview();
-            }
-            syncUploadFileSizeControls();
-          },
-        );
-
-        bindRadioSetting(
-          {
-            combined: uploadDisplayCombinedInput,
-            perfile: uploadDisplayPerFileInput,
-          },
-          "uploadProgressDisplayMode",
-          () => uploadProgressDisplayMode,
-          (v) => {
-            uploadProgressDisplayMode = v;
-          },
-          () => {
-            if (!enableUploadProgress) return;
-            refreshUploadProgressUI();
-            syncUploadFileSizeControls();
-            showUploadProgressPreview();
-          },
-        );
-
-        bindRadioSetting(
-          {
-            percent: uploadProgressPercentInput,
-            size: uploadProgressSizeInput,
-            both: uploadProgressBothInput,
-          },
-          "uploadProgressTextMode",
-          () => uploadProgressTextMode,
-          (v) => {
-            uploadProgressTextMode = v;
-          },
-          () => {
-            syncUploadFileSizeControls();
-            refreshUploadProgressUI();
-            showUploadProgressPreview();
-          },
-        );
-
-        bindCheckboxSetting(
-          showUploadFileSizeInput,
-          "showUploadFileSize",
-          () => showUploadFileSize,
-          (v) => {
-            showUploadFileSize = v;
-          },
-          (v) => {
-            const sizeLabel = document.getElementById("upload-progress-size");
-            if (sizeLabel) {
-              sizeLabel.style.display =
-                enableUploadProgress &&
-                uploadProgressDisplayMode === "combined" &&
-                uploadProgressTextMode === "percent" &&
-                v
-                  ? ""
-                  : "none";
-            }
-            showUploadProgressPreview();
-          },
-        );
-
-        syncUploadFileSizeControls();
-
-        bindCheckboxSetting(
-          enableForumButtonInput,
-          "enableForumButton",
-          () => enableForumButton,
-          (v) => {
-            enableForumButton = v;
-          },
-          (v) => {
-            if (v) addForumButton();
+          "enableForumButton": () => {
+            if (settings.enableForumButton) addForumButton();
             else removeForumButton();
           },
-        );
-
-        bindCheckboxSetting(
-          enableJumpToBottomButtonInput,
-          "enableJumpToBottomButton",
-          () => enableJumpToBottomButton,
-          (v) => {
-            enableJumpToBottomButton = v;
-          },
-          (v) => {
-            if (v) addJumpToBottomButton();
+          "enableJumpToBottomButton": () => {
+            if (settings.enableJumpToBottomButton) addJumpToBottomButton();
             else removeJumpToBottomButton();
           },
-        );
+        };
+
+        const controls = [];
+        const syncControls = () => {
+          for (const { field, row, inputs } of controls) {
+            const visible = field.visible?.(settings) ?? true;
+            const enabled = visible && (field.enabled?.(settings) ?? true);
+            row.hidden = !visible;
+            row.classList.toggle("ultreme-setting-disabled", !enabled);
+            for (const input of inputs) {
+              input.disabled = !enabled;
+              if (field.control === "select") input.value = settings[field.key];
+              else input.checked = field.options
+                ? input.value === settings[field.key]
+                : settings[field.key];
+            }
+          }
+        };
+
+        const sections = new Map();
+        for (const section of SETTINGS_SECTIONS) {
+          const body = createCategory(section.title);
+          body.dataset.settingsSection = section.id;
+          sections.set(section.id, body);
+          for (const field of section.fields) {
+            const isSelect = field.control === "select";
+            const isRadio = !!field.options && !isSelect;
+            const row = document.createElement(isRadio ? "fieldset" : "div");
+            row.className = isRadio ? "ultreme-setting-field" :
+              `setting__container setting__container--${isSelect ? "select" : "checkbox"}`;
+            row.dataset.setting = field.key;
+            body.appendChild(row);
+            if (isRadio) {
+              const legend = document.createElement("legend");
+              legend.className = "ultreme-setting-subtitle";
+              legend.textContent = field.label;
+              row.appendChild(legend);
+            }
+            const inputs = [];
+            for (const option of (isSelect ? null : field.options) || [{ label: field.label }]) {
+              const label = document.createElement("label");
+              label.className = "setting__label";
+              const input = document.createElement(isSelect ? "select" : "input");
+              if (!isSelect) input.type = isRadio ? "radio" : "checkbox";
+              input.className = "setting__input " +
+                (option.className || ("js-ultreme-" + field.key));
+              if (field.options) {
+                input.name = STORAGE_PREFIX + field.key;
+                if (isRadio) input.value = option.value;
+                else for (const choice of field.options) {
+                  const item = document.createElement("option");
+                  item.value = choice.value;
+                  item.textContent = choice.label;
+                  input.appendChild(item);
+                }
+              }
+              const text = document.createElement("span");
+              text.textContent = option.label;
+              if (isSelect) label.append(text, input);
+              else label.append(input, text);
+              if (isRadio) {
+                const choice = document.createElement("div");
+                choice.className = "setting__container setting__container--checkbox";
+                choice.appendChild(label);
+                row.appendChild(choice);
+              } else row.appendChild(label);
+              inputs.push(input);
+              input.addEventListener("change", () => {
+                if (input.disabled || (isRadio && !input.checked)) return;
+                saveSetting(field.key, field.options ? input.value : input.checked);
+                syncControls();
+                if (section.id === "uploads") {
+                  if (settings.enableUploadProgress) {
+                    refreshUploadProgressUI();
+                    showUploadProgressPreview();
+                  } else disableUploadProgressUI();
+                } else settingEffects[field.key]?.();
+              });
+            }
+            if (field.hint) {
+              const hint = document.createElement("div");
+              hint.className = "setting__hint";
+              hint.textContent = field.hint;
+              row.appendChild(hint);
+            }
+            controls.push({ field, row, inputs });
+          }
+        }
+        syncControls();
+        const aboutBody = sections.get("about");
+        aboutBody.classList.add("ultreme-about");
 
         const ver = getInstalledVersion() || "unknown";
 
@@ -3032,76 +2813,42 @@
       return true;
     };
 
-    const installMenuRetry = () => {
-      if (setupUserscriptSettingsTab()) return;
-      setTimeout(installMenuRetry, 150);
-    };
-
     const processMessage = (msg) => {
       if (processedMessages.has(msg)) return;
+
+      const messageData = buildQuoteDataFromMessageElement(msg);
+      if (!messageData) return;
       processedMessages.add(msg);
 
-      if (!document.querySelector("textarea.input__text")) return;
-
-      const messageData = extractMessageData(msg);
-      if (!messageData) return;
-
-      const {
-        id,
-        name,
-        color: userColor,
-        created: dataCreated,
-        authorId,
-        avatarVersion,
-        msg: msgText,
-      } = messageData;
+      const { id } = messageData;
       const author = msg.dataset.author;
-      const bodyText = msg.dataset.body || "";
 
       const textEl =
         msg.querySelector(".message__text") ||
         msg.querySelector(".message-tiny-text");
       if (!textEl) return;
 
-      const msgTextContent = textEl.textContent.trim();
-      let sysType = null;
-      if (
-        bodyText.includes("has joined") ||
-        msgTextContent.includes("has joined")
-      )
-        sysType = "join";
-      else if (
-        bodyText.includes("has disconnected") ||
-        msgTextContent.includes("has disconnected")
-      )
-        sysType = "leave";
+      const sysType = getConnectionNoticeType(msg);
+      const connectionKey = `${msg.dataset.channel || ""}:${author}`;
 
       if (sysType && author) {
-        if (enableKonkira) applyKonkira(msg, author, sysType);
+        if (settings.enableKonkira) applyKonkira(msg, connectionKey, sysType);
         return;
-      } else if (enableKonkira && author) {
-        konkiraStates.delete(author);
+      } else if (settings.enableKonkira && author) {
+        konkiraStates.delete(connectionKey);
       }
 
       const timeEl = msg.querySelector(".message__time");
 
       if (timeEl) {
         timeEl.onclick = (e) => {
-          if (enableDelete && e.shiftKey && author === uid) {
-            W.Umi?.Server?.SendMessage?.(`/delete ${id}`);
+          if (settings.enableDelete && e.shiftKey && isOwnMessage(msg)) {
+            deleteMessage(msg);
             return;
           }
           clearSelectedMessage();
           msg.classList.add("selected-quote");
-          applyQuote({
-            name,
-            color: userColor,
-            created: dataCreated,
-            id,
-            authorId,
-            avatarVersion,
-            msg: msgText,
-          });
+          applyQuote(messageData);
         };
       }
 
@@ -3118,27 +2865,31 @@
       if (!btnContainer) {
         btnContainer = document.createElement("div");
         btnContainer.className = "message-button-container";
+        btnContainer.setAttribute("role", "group");
+        btnContainer.setAttribute("aria-label", "Message actions");
+        msg.classList.add("ultreme-has-actions");
         msg.style.position = "relative";
         msg.appendChild(btnContainer);
       }
 
-      if (!msg.querySelector(".delete-button") && author === uid) {
+      if (!msg.querySelector(".delete-button") && isOwnMessage(msg)) {
         appendMessageButton(btnContainer, {
           className: "delete-button",
-          text: "&times;",
+          icon: "trash-alt",
+          text: "Delete",
           title: "Delete this message",
-          visible: enableDelete && showDeleteButton,
-          onClick: () => W.Umi?.Server?.SendMessage?.(`/delete ${id}`),
-          html: true,
+          visible: settings.enableDelete && settings.showDeleteButton,
+          onClick: () => deleteMessage(msg),
         });
       }
 
       if (!msg.querySelector(".quote-button")) {
         appendMessageButton(btnContainer, {
           className: "quote-button",
+          icon: "quote-right",
           text: "Quote",
           title: "Quote this message",
-          visible: showQuoteButton,
+          visible: settings.showQuoteButton,
           onClick: () => {
             clearSelectedMessage();
             msg.classList.add("selected-quote");
@@ -3147,15 +2898,7 @@
               selectedQuoteData.id === id &&
               selectedQuoteData.msg
                 ? { ...selectedQuoteData }
-                : {
-                    name,
-                    color: userColor,
-                    created: dataCreated,
-                    id,
-                    authorId,
-                    avatarVersion,
-                    msg: msgText,
-                  };
+                : messageData;
             applyQuote(quoteData);
           },
         });
@@ -3167,9 +2910,10 @@
         if (targetId) {
           appendMessageButton(btnContainer, {
             className: "goto-button",
+            icon: "arrow-up",
             text: "Go to quoted",
             title: "Scroll to quoted message",
-            visible: showGotoButton,
+            visible: settings.showGotoButton,
             onClick: () => scrollToMessageId(targetId),
           });
         }
@@ -3178,46 +2922,52 @@
       enhanceScriptQuote(msg, textEl);
     };
 
-    const processNewMessages = () => {
-      const container = getMessagesContainer();
-      if (!container) return;
-
-      const children = [...container.children];
-      const unhandled = [];
-
-      for (let i = children.length - 1; i >= 0; i--) {
-        const msg = children[i];
-        if (!msg.classList.contains("message")) continue;
-        if (processedMessages.has(msg)) break;
-        // Prepend to array to ensure older unhandled messages are processed first
-        unhandled.unshift(msg);
-      }
-
-      // Process chronologically so states calculate in correct order
-      for (const msg of unhandled) {
-        processMessage(msg);
-      }
-    };
-
     injectCSS();
-    installMenuRetry();
-    processNewMessages();
+    syncActionThemeColors();
+    // Mami changes body theme classes after loading the selected stylesheet.
+    new MutationObserver(syncActionThemeColors).observe(document.body, {
+      attributes: true, attributeFilter: ["class"],
+    });
+    applyMessageButtonSettings();
+    setupUserscriptSettingsTab();
+    const touchActions = W.matchMedia("(hover: none)");
+    touchActions.addEventListener("change", dismissTouchActions);
+    document.addEventListener("scroll", dismissTouchActions, { capture: true, passive: true });
+    document.addEventListener("click", (event) => {
+      if (!touchActions.matches || settings.messageButtonVisibility !== "hover") return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const msg = target.closest("#umi-messages > .message.ultreme-has-actions");
+      if (!msg) {
+        dismissTouchActions();
+        return;
+      }
+      if (target.closest("a, button, input, textarea, select, label, summary, audio, video, [contenteditable], [role=button], .message__quote, .message__time, .message__user")) {
+        dismissTouchActions();
+        return;
+      }
+      if (W.getSelection?.()?.isCollapsed === false) return;
+      const wasOpen = revealedActionMessage === msg;
+      dismissTouchActions();
+      if (!wasOpen) {
+        revealedActionMessage = msg;
+        msg.classList.add("ultreme-actions-open");
+      }
+    });
+    // Mami emits this after parsing and inserting each message, including backlog.
+    W.addEventListener("umi:ui:message_add", (event) => {
+      const msg = event.detail?.element;
+      if (msg?.parentElement === getMessagesContainer()) processMessage(msg);
+    });
+    for (const msg of [...getMessagesContainer().children]) {
+      if (msg.classList.contains("message")) processMessage(msg);
+    }
     addForumButton();
     addJumpToBottomButton();
 
-    if (!document.__ultremeSelectedQuoteHookInstalled) {
-      document.__ultremeSelectedQuoteHookInstalled = true;
-      document.addEventListener("ultreme:apply-selected-quote", () => {
-        if (!selectedQuoteData) return;
-        applyQuote(selectedQuoteData);
-      });
-    }
-
-    const container = getMessagesContainer();
-    if (container)
-      new MutationObserver(processNewMessages).observe(container, {
-        childList: true,
-      });
+    applySelectedQuote = () => {
+      if (selectedQuoteData) applyQuote(selectedQuoteData);
+    };
 
     const form = document.querySelector("form.input");
     const input = document.querySelector("textarea.input__text");
@@ -3282,5 +3032,8 @@
         else selectMessage(-1);
       }
     });
-  });
+  };
+
+  W.addEventListener("umi:connect", initialize);
+  initialize();
 })();
