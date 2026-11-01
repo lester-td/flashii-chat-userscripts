@@ -1,54 +1,47 @@
-# Flashii Chat Userscripts
-_Flashii Chat userscript by lester. Please have Greasemonkey or Tampermonkey installed._
+# Flashii Chat — Ultreme Script
 
-## Note
-_The following userscripts are deprecated. Please use the Ultreme Script instead._
-_1. better-quotes-n-delete.user.js_
-_2. file-upload-progress-bar.user.js_
+## Install
 
+Install Tampermonkey or Greasemonkey, then click below. Reload chat and open **Ultreme Script** in the sidebar to configure it.
 
-## Ultreme Script
-Combines multiple userscripts into an all-in-one userscript for Flashii Chat.
-
-![Preview](docs/ss/script-settings.png)
+[![Download Ultreme](docs/dl/ultreme-dl-75.png)](https://patchii.net/lester/flashii-chat-userscripts/raw/branch/trunk/ultreme-script.user.js)
 
 ## Features
 
-### Quoting
-- Quote buttons on each message
-- Partial quoting by selecting message text and using the Quote button
-- Quote preview above the input before sending
-- Quote blocks with author, avatar, and relative timestamp
-- Jump to the original quoted message from quote links and quote blocks
-- Ctrl+Up / Ctrl+Down keyboard navigation for selecting messages to quote
+- Full and partial quotes, previews, author avatars, and links to original messages.
+- Delete your own messages using the Delete button or **Shift+click** on the timestamp.
+- Customizable action icons, labels, visibility, and theme-colored button styles. On touch screens, tap a message to reveal its actions.
+- Combined upload progress or per-file popups.
+- Image, video, and audio previews for quoted media.
+- Join/leave notice compaction, forum and jump-to-bottom buttons, and update checks.
 
-![Preview](docs/ss/quoting.png)
+Use **Ctrl+↑ / Ctrl+↓** to select messages to quote and **Esc** to cancel a pending quote.
 
-### Deleting
-- Delete your own messages with Shift+Click on the timestamp
-- Delete button on your own messages
+## Screenshots
 
-### Upload Progress Bar
-- Upload progress bar with multiple options
-- Choice of a combined progress bar, or a pop up per file upload
+**Settings**
 
-![Preview](docs/ss/progress-popup.png)
-![Preview](docs/ss/progress-type1.png)
-![Preview](docs/ss/progress-type2.png)
-![Preview](docs/ss/progress-type3.png)
-![Preview](docs/ss/progress-type4.png)
+![Userscript settings](docs/ss/script-settings.png)
 
-### Navigation
-- Flashii logo button that opens the forum
+**Quoting**
 
-### Media
-- Media viewer for quoted image, video, and audio links
+![Quote preview and message quotes](docs/ss/quoting.png)
+![Quoted image embeds](docs/ss/quoting-image-embed.png)
 
-![Preview](docs/ss/media-viewer.png)
+**Upload progress**
 
-### Script Options
-- Sidebar settings page for toggling features without editing the script
-- Update checker with manual check and update prompt
+![Per-file upload popups](docs/ss/progress-popup.png)
 
-## Download
-[![Download](docs/ultreme-dl-75.png)](https://patchii.net/lester/flashii-chat-userscripts/raw/branch/trunk/ultreme-script.user.js "Download")
+<details>
+<summary>Combined progress bar styles</summary>
+
+![Progress bar style 1](docs/ss/progress-type1.png)
+![Progress bar style 2](docs/ss/progress-type2.png)
+![Progress bar style 3](docs/ss/progress-type3.png)
+![Progress bar style 4](docs/ss/progress-type4.png)
+
+</details>
+
+**Media viewer**
+
+![Quoted media viewer](docs/ss/media-viewer.png)
