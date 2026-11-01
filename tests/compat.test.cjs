@@ -707,3 +707,115 @@ test("outlined and borderless filled actions follow every native theme when swit
     }
   } finally { await f.close(); }
 });
+
+test("rapid upload preview changes cannot remove the latest preview or a real upload", async () => {
+  const f = await fixture();
+  const select = key => f.page.locator(`.js-ultreme-${key}`);
+  try {
+    await f.page.clock.install();
+    await select("uploadProgressDisplayPerFile").check();
+    await select("uploadProgressDisplayCombined").check();
+    await select("uploadProgressDisplayPerFile").check();
+    await f.page.clock.runFor(200);
+    assert.equal(await f.page.locator('.upload-progress-item[data-upload-id="__preview__"]').count(), 1);
+    assert.equal(await f.page.locator(".upload-progress-item__meta").innerText(), "64%");
+    await f.page.evaluate(() => { window.startUpload("real"); window.progress("real", 25); });
+    await f.page.clock.runFor(1600);
+    assert.equal(await f.page.locator('.upload-progress-item[data-upload-id="__preview__"]').count(), 0);
+    assert.equal(await f.page.locator(".upload-progress-item__name").innerText(), "real.png");
+    assert.equal(await f.page.locator(".upload-progress-item__meta").innerText(), "25%");
+    await f.page.evaluate(() => window.finish("real"));
+    await f.page.clock.runFor(1400);
+    assert.equal(await f.page.locator("#upload-progress-popup").count(), 0);
+  } finally { await f.close(); }
+});
+
+test("inline quote media shares the viewer's media types and reuses embedded elements", async () => {
+  const f = await fixture();
+  try {
+    await f.page.evaluate(() => window.addMessage({ id: "10", html:
+      '<i>Lester @ 1m ago —</i><a href="#1:1">\u200c</a><q>https://example.com/image.png https://example.com/video.mp4 https://example.com/audio.mp3</q>' }));
+    const toggles = f.page.locator(".message__quote-embed-toggle");
+    for (const [index, tag] of ["img", "video", "audio"].entries()) {
+      const toggle = toggles.nth(index);
+      const embed = f.page.locator(".message__quote-embed").nth(index);
+      await toggle.click();
+      assert.equal(await embed.locator(tag).count(), 1);
+      if (tag !== "img") {
+        assert.deepEqual(await embed.locator(tag).evaluate(el => ({ controls: el.controls, autoplay: el.autoplay, preload: el.preload })),
+          { controls: true, autoplay: false, preload: "metadata" });
+      }
+      await toggle.click();
+      assert.equal(await embed.isVisible(), false);
+      await toggle.click();
+      assert.equal(await embed.locator(tag).count(), 1);
+      assert.equal(await embed.isVisible(), true);
+      await f.page.locator(".message__quote-media").nth(index).click();
+      assert.equal(await f.page.locator(`.umi-media-modal-content ${tag}`).count(), 1);
+      await f.page.locator(".umi-media-modal-close").click();
+    }
+  } finally { await f.close(); }
+});
+
+test("settings sections finish correctly after repeated collapse and expand clicks", async () => {
+  const f = await fixture();
+  const section = f.page.locator('[data-settings-section="messages"]');
+  const header = f.page.locator(".setting__category-title").filter({ hasText: /^Messages$/ });
+  const finish = () => section.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+  try {
+    await header.click(); await finish();
+    assert.equal(await section.evaluate(el => el.getBoundingClientRect().height), 0);
+    await header.evaluate(el => { el.click(); el.click(); }); await finish();
+    assert.equal(await section.evaluate(el => el.getBoundingClientRect().height), 0);
+    await header.click(); await finish();
+    assert.ok(await section.evaluate(el => el.getBoundingClientRect().height > 0));
+  } finally { await f.close(); }
+});
+
+test("the modern userscript request API keeps its receiver and update status behavior", async () => {
+  const f = await fixture();
+  try {
+    await f.page.evaluate(() => {
+      window.GM = {
+        info: { script: { version: "5.7.0" } },
+        xmlHttpRequest(options) {
+          if (this !== window.GM) throw new Error("Incorrect request receiver");
+          queueMicrotask(() => options.onload({ responseText: "// @version 5.8.0" }));
+        },
+      };
+    });
+    await f.page.getByRole("button", { name: "Check for updates", exact: true }).click();
+    assert.equal(await f.page.locator("#ultreme-about-update-status").innerText(), "Update available: 5.8.0");
+  } finally { await f.close(); }
+});
+
+test("navigation actions keep their behavior and placement when toggled repeatedly", async () => {
+  const f = await fixture();
+  try {
+    await f.page.evaluate(() => {
+      window.opened = [];
+      window.open = (...args) => window.opened.push(args);
+      document.getElementById("umi-messages-anchor").scrollIntoView = options => {
+        window.scrolledToBottom = options.block;
+      };
+    });
+    for (let i = 0; i < 2; i++) {
+      for (const [key, id] of [
+        ["enableForumButton", "ultreme-forum-button"],
+        ["enableJumpToBottomButton", "ultreme-jump-bottom-button"],
+      ]) {
+        const setting = f.page.locator(`.js-ultreme-${key}`);
+        await setting.uncheck();
+        assert.equal(await f.page.locator(`#${id}`).count(), 0);
+        await setting.check();
+        assert.equal(await f.page.locator(`#${id}`).count(), 1);
+      }
+    }
+    assert.equal(await f.page.locator('.sidebar__selector-mode').first().getAttribute("id"), "ultreme-forum-button");
+    assert.equal(await f.page.locator('[title="Scroll mode"] + button').getAttribute("id"), "ultreme-jump-bottom-button");
+    await f.page.locator("#ultreme-forum-button").click();
+    await f.page.locator("#ultreme-jump-bottom-button").click();
+    assert.deepEqual(await f.page.evaluate(() => window.opened), [["https://flashii.net/forum", "_blank"]]);
+    assert.equal(await f.page.evaluate(() => window.scrolledToBottom), "end");
+  } finally { await f.close(); }
+});

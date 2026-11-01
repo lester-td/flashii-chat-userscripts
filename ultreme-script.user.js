@@ -35,7 +35,6 @@
   const DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH = 100;
   const UPLOAD_PROGRESS_BAR_TEXT_PADDING = 16;
   const UPLOAD_PREVIEW_DURATION_MS = 1500;
-  let didAutoUpdateCheck = false;
 
   // Keys also identify the existing ultreme_ localStorage entries.
   const SETTINGS_SECTIONS = [
@@ -123,8 +122,7 @@
     },
     { id: "about", title: "About", fields: [] },
   ];
-  const settingDefinitions = new Map(SETTINGS_SECTIONS.flatMap(section =>
-    section.fields.map(field => [field.key, field])));
+  const settingFields = SETTINGS_SECTIONS.flatMap(section => section.fields);
   const loadSetting = (field) => {
     try {
       const value = localStorage.getItem(STORAGE_PREFIX + field.key);
@@ -135,8 +133,8 @@
       return field.default;
     }
   };
-  const settings = Object.fromEntries([...settingDefinitions].map(([key, field]) =>
-    [key, loadSetting(field)]));
+  const settings = Object.fromEntries(settingFields.map(field =>
+    [field.key, loadSetting(field)]));
   const saveSetting = (key, value) => {
     settings[key] = value;
     try {
@@ -181,7 +179,6 @@
 
   let selectedText = "";
   let selectedQuoteData = null;
-  let applySelectedQuote = null;
   let pendingQuote = null;
   let previewInterval = null;
   let selectedMessageIndex = -1;
@@ -191,8 +188,7 @@
   let mediaModal = null;
   const NativeXHR = W.XMLHttpRequest;
   const uploads = new Map();
-  let combinedUploadPreviewTimer = null;
-  let perFileUploadPreviewTimer = null;
+  let uploadPreviewTimer = null;
   const measureUploadProgressTextWidth = (() => {
     let canvas = null;
     let ctx = null;
@@ -206,6 +202,16 @@
   })();
 
   const getMessagesContainer = () => document.getElementById("umi-messages");
+  const getChatInput = () => document.querySelector("textarea.input__text");
+  const getMessageText = (msg) => msg?.querySelector(".message__text, .message-tiny-text");
+  const getUserColor = (element) => {
+    const color = element?.style.color;
+    return color && color !== "inherit" ? rgbToHex(color) : null;
+  };
+  const getQuoteReference = (text) => {
+    const anchor = text.querySelector('a[href^="#"]');
+    return { anchor, ...parseQuoteHref(anchor?.getAttribute("href")) };
+  };
 
   const getUploadPopupRoot = () =>
     document.getElementById("upload-progress-popup");
@@ -241,14 +247,14 @@
     return [...container.children].filter((msg) =>
       msg.classList.contains("message") &&
       !msg.classList.contains("hidden") &&
-      !!buildQuoteDataFromMessageElement(msg) &&
+      msg.querySelector(".message__user") && getMessageText(msg) &&
       !getConnectionNoticeType(msg),
     );
   };
 
   const rgbToHex = (rgb) => {
-    const m = rgb?.match(/\d+/g);
     if (rgb?.startsWith("#")) return rgb;
+    const m = rgb?.match(/\d+/g);
     return m?.length >= 3
       ? "#" +
           m
@@ -260,14 +266,10 @@
 
   const buildQuoteDataFromMessageElement = (msg, overrideText = null) => {
     const userEl = msg?.querySelector(".message__user");
-    const textEl =
-      msg?.querySelector(".message__text") ||
-      msg?.querySelector(".message-tiny-text");
+    const textEl = getMessageText(msg);
     if (!msg || !userEl || !textEl) return null;
 
     const dataCreated = msg.getAttribute("data-created");
-    const raw = userEl.style?.color;
-    const userColor = !raw || raw === "inherit" ? null : rgbToHex(raw);
     const name = userEl.textContent?.trim() || "Unknown";
     const msgText =
       typeof overrideText === "string"
@@ -276,7 +278,7 @@
 
     return {
       name,
-      color: userColor,
+      color: getUserColor(userEl),
       created: dataCreated,
       id: msg.dataset.id,
       authorId: msg.dataset.author,
@@ -405,59 +407,42 @@
     return `${mb.toFixed(mb >= 100 ? 0 : mb >= 10 ? 1 : 2)} MB`;
   }
 
-  function clearCombinedUploadPreview() {
-    if (combinedUploadPreviewTimer) {
-      clearTimeout(combinedUploadPreviewTimer);
-      combinedUploadPreviewTimer = null;
-    }
-
-    if (uploads.size > 0 || settings.uploadProgressDisplayMode !== "combined") return;
-
-    const elements = getCombinedUploadProgressElements();
-    if (!elements) return;
-    const { wrapper, bar, inner, text, sizeLabel } = elements;
-
-    wrapper.style.opacity = "0";
-    bar.style.width = `${DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH}px`;
-    inner.style.width = "0%";
-    text.textContent = "";
-    sizeLabel.textContent = "";
+  function getUploadProgress(loaded, total) {
+    return {
+      percent: total === 0 ? 0 : Math.round((loaded / total) * 100),
+      sizeText: `${formatUploadSize(loaded)}/${formatUploadSize(total)}`,
+    };
   }
 
-  function showCombinedUploadPreview() {
-    if (
-      !settings.enableUploadProgress ||
-      settings.uploadProgressDisplayMode !== "combined" ||
-      uploads.size > 0
-    )
-      return;
-
-    createProgressBar();
-
+  function renderCombinedProgress({ percent, sizeText }, visible) {
     const elements = getCombinedUploadProgressElements();
     if (!elements) return;
     const { wrapper, bar, inner, text, sizeLabel } = elements;
-
-    const previewPercent = 64;
-    const previewSizeText = "12.4 MB/19.6 MB";
-    const barText = getCombinedUploadProgressText(
-      previewPercent,
-      previewSizeText,
-    );
-    const barWidth = getCombinedUploadProgressBarWidth(barText);
-
-    wrapper.style.opacity = "1";
-    bar.style.width = `${barWidth}px`;
-    inner.style.width = `${previewPercent}%`;
+    const barText = visible ? getCombinedUploadProgressText(percent, sizeText) : "";
+    wrapper.style.opacity = visible ? "1" : "0";
+    bar.style.width = `${visible ? getCombinedUploadProgressBarWidth(barText) : DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH}px`;
+    inner.style.width = `${visible ? percent : 0}%`;
     text.textContent = barText;
-    sizeLabel.textContent = previewSizeText;
-    sizeLabel.style.display =
-      settings.uploadProgressTextMode === "percent" && settings.showUploadFileSize ? "" : "none";
+    sizeLabel.textContent = visible ? sizeText : "";
+    sizeLabel.style.display = settings.uploadProgressTextMode === "percent" && settings.showUploadFileSize ? "" : "none";
+  }
 
-    if (combinedUploadPreviewTimer) clearTimeout(combinedUploadPreviewTimer);
-    combinedUploadPreviewTimer = setTimeout(() => {
-      clearCombinedUploadPreview();
-    }, UPLOAD_PREVIEW_DURATION_MS);
+  function renderUploadPopupItem(id, { label, percent, sizeText, done = false }) {
+    const item = ensureUploadPopupItem(id, label);
+    item.querySelector(".upload-progress-item__name").textContent = label;
+    item.querySelector(".upload-progress-item__meta").textContent = `${percent}%`;
+    item.querySelector(".upload-progress-item__fill").style.width = `${percent}%`;
+    item.querySelector(".upload-progress-item__size").textContent = sizeText;
+    item.classList.toggle("is-done", done);
+  }
+
+  function clearUploadPreview({ fade = false } = {}) {
+    clearTimeout(uploadPreviewTimer);
+    uploadPreviewTimer = null;
+    if (fade) removeUploadPopupItem("__preview__");
+    else getUploadPopupRoot()?.querySelector('[data-upload-id="__preview__"]')?.remove();
+    cleanupUploadPopupIfEmpty();
+    if (uploads.size === 0) renderCombinedProgress({ percent: 0, sizeText: "" }, false);
   }
 
   function getUploadLabel(body, fallbackId) {
@@ -526,51 +511,18 @@
     }, 150);
   }
 
-  function clearPerFileUploadPreview() {
-    if (perFileUploadPreviewTimer) {
-      clearTimeout(perFileUploadPreviewTimer);
-      perFileUploadPreviewTimer = null;
-    }
-
-    if (uploads.size > 0 || settings.uploadProgressDisplayMode !== "perfile") return;
-
-    removeUploadPopupItem("__preview__");
-  }
-
-  function showPerFileUploadPreview() {
-    if (
-      !settings.enableUploadProgress ||
-      settings.uploadProgressDisplayMode !== "perfile" ||
-      uploads.size > 0
-    )
-      return;
-
-    const item = ensureUploadPopupItem("__preview__", "example-image.png");
-    const popup = getUploadPopupRoot();
-    if (!item) return;
-
-    const meta = item.querySelector(".upload-progress-item__meta");
-    const fill = item.querySelector(".upload-progress-item__fill");
-    const size = item.querySelector(".upload-progress-item__size");
-
-    item.classList.remove("is-done");
-    meta.textContent = "64%";
-    size.textContent = "12.4 MB/19.6 MB";
-    fill.style.width = "64%";
-    if (popup) fadeInUploadPopup();
-
-    if (perFileUploadPreviewTimer) clearTimeout(perFileUploadPreviewTimer);
-    perFileUploadPreviewTimer = setTimeout(() => {
-      clearPerFileUploadPreview();
-    }, UPLOAD_PREVIEW_DURATION_MS);
-  }
-
   function showUploadProgressPreview() {
-    clearCombinedUploadPreview();
-    clearPerFileUploadPreview();
-
-    if (settings.uploadProgressDisplayMode === "perfile") showPerFileUploadPreview();
-    else showCombinedUploadPreview();
+    clearUploadPreview();
+    if (!settings.enableUploadProgress || uploads.size > 0) return;
+    const preview = { label: "example-image.png", percent: 64, sizeText: "12.4 MB/19.6 MB" };
+    if (settings.uploadProgressDisplayMode === "combined") {
+      createProgressBar();
+      renderCombinedProgress(preview, true);
+    } else {
+      renderUploadPopupItem("__preview__", preview);
+      fadeInUploadPopup();
+    }
+    uploadPreviewTimer = setTimeout(() => clearUploadPreview({ fade: true }), UPLOAD_PREVIEW_DURATION_MS);
   }
 
   function updatePerFileProgress() {
@@ -581,24 +533,8 @@
     if (uploads.size > 0) fadeInUploadPopup();
     else popup.style.opacity = "0";
 
-    for (const [id, upload] of uploads.entries()) {
-      const percent =
-        upload.total === 0
-          ? 0
-          : Math.round((upload.loaded / upload.total) * 100);
-      const item = ensureUploadPopupItem(id, upload.label || `Upload ${id}`);
-      if (!item) continue;
-
-      const meta = item.querySelector(".upload-progress-item__meta");
-      const fill = item.querySelector(".upload-progress-item__fill");
-      const size = item.querySelector(".upload-progress-item__size");
-      const name = item.querySelector(".upload-progress-item__name");
-
-      name.textContent = upload.label || `Upload ${id}`;
-      meta.textContent = `${percent}%`;
-      size.textContent = `${formatUploadSize(upload.loaded)}/${formatUploadSize(upload.total)}`;
-      fill.style.width = `${percent}%`;
-      item.classList.toggle("is-done", upload.done);
+    for (const [id, upload] of uploads) {
+      renderUploadPopupItem(id, { ...upload, ...getUploadProgress(upload.loaded, upload.total) });
     }
 
     for (const item of [...popup.querySelectorAll(".upload-progress-item")]) {
@@ -610,46 +546,27 @@
 
   function refreshUploadProgressUI() {
     if (!settings.enableUploadProgress) return;
+    clearUploadPreview();
 
     if (settings.uploadProgressDisplayMode === "perfile") {
-      clearCombinedUploadPreview();
       document.getElementById("upload-progress-wrapper")?.remove();
       updatePerFileProgress();
       return;
     }
 
     getUploadPopupRoot()?.remove();
-    clearPerFileUploadPreview();
     createProgressBar();
     updateCombinedProgress();
   }
 
   function updateCombinedProgress() {
-    let totalLoaded = 0;
-    let totalSize = 0;
-
-    for (const { loaded, total } of uploads.values()) {
-      totalLoaded += loaded;
-      totalSize += total;
+    let loaded = 0;
+    let total = 0;
+    for (const upload of uploads.values()) {
+      loaded += upload.loaded;
+      total += upload.total;
     }
-
-    const percent =
-      totalSize === 0 ? 0 : Math.round((totalLoaded / totalSize) * 100);
-    const elements = getCombinedUploadProgressElements();
-    if (!elements) return;
-    const { wrapper, bar, inner, text, sizeLabel } = elements;
-
-    const sizeText = `${formatUploadSize(totalLoaded)}/${formatUploadSize(totalSize)}`;
-    const barText = getCombinedUploadProgressText(percent, sizeText);
-    const barWidth = getCombinedUploadProgressBarWidth(barText);
-
-    wrapper.style.opacity = uploads.size > 0 ? "1" : "0";
-    bar.style.width = `${barWidth}px`;
-    inner.style.width = `${percent}%`;
-    text.textContent = barText;
-    sizeLabel.textContent = sizeText;
-    sizeLabel.style.display =
-      settings.uploadProgressTextMode === "percent" && settings.showUploadFileSize ? "" : "none";
+    renderCombinedProgress(getUploadProgress(loaded, total), uploads.size > 0);
   }
 
   function installUploadProgressPatchOnce() {
@@ -733,8 +650,7 @@
   }
 
   function disableUploadProgressUI() {
-    clearCombinedUploadPreview();
-    clearPerFileUploadPreview();
+    clearUploadPreview();
     document.getElementById("upload-progress-wrapper")?.remove();
     getUploadPopupRoot()?.remove();
     for (const upload of uploads.values()) {
@@ -745,96 +661,53 @@
 
   installUploadProgressPatchOnce();
 
-  function addForumButton() {
-    if (!settings.enableForumButton) return;
-
-    const sidebarSelector = document.querySelector(".sidebar__selector");
-    const firstButton = sidebarSelector?.querySelector(
-      ".sidebar__selector-mode",
-    );
-    if (!sidebarSelector || !firstButton) return;
-    if (sidebarSelector.querySelector(".custom-button")) return;
-
-    const newButton = document.createElement("button");
-    newButton.classList.add("sidebar__selector-mode", "custom-button");
-    newButton.title = "Go to Forum";
-    newButton.style.cssText = `
-      width: 40px;
-      height: 40px;
-      border: none;
-      background-color: transparent;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    `;
-
-    const favicon =
-      document.querySelector('link[rel~="icon"]')?.href || "/favicon.ico";
-    const faviconImg = document.createElement("img");
-    faviconImg.src = favicon;
-    faviconImg.alt = "Flashii Forum";
-    faviconImg.style.width = "32px";
-    faviconImg.style.height = "32px";
-    newButton.appendChild(faviconImg);
-
-    newButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      W.open("https://flashii.net/forum", "_blank");
-    });
-
-    sidebarSelector.insertBefore(newButton, firstButton);
-  }
-
-  function removeForumButton() {
-    document.querySelector(".custom-button")?.remove();
-  }
-
   function scrollMessagesToBottom() {
     const messages = getMessagesContainer();
     if (!messages) return;
-
     messages.scrollTop = messages.scrollHeight;
-    document
-      .getElementById("umi-messages-anchor")
-      ?.scrollIntoView({ block: "end" });
+    document.getElementById("umi-messages-anchor")?.scrollIntoView({ block: "end" });
   }
 
-  function addJumpToBottomButton() {
-    if (!settings.enableJumpToBottomButton) return;
+  const SIDEBAR_ACTIONS = [
+    {
+      key: "enableForumButton", id: "ultreme-forum-button", className: "custom-button",
+      title: "Go to Forum", image: true,
+      run: () => W.open("https://flashii.net/forum", "_blank"),
+    },
+    {
+      key: "enableJumpToBottomButton", id: "ultreme-jump-bottom-button",
+      title: "Jump to bottom", icon: "arrow-down", afterTitle: "Scroll mode",
+      run: scrollMessagesToBottom,
+    },
+  ];
 
-    const sidebarSelector = document.querySelector(".sidebar__selector");
-    if (
-      !sidebarSelector ||
-      document.getElementById("ultreme-jump-bottom-button")
-    )
-      return;
-
-    const scrollModeButton = [
-      ...sidebarSelector.querySelectorAll(".sidebar__selector-mode"),
-    ].find((button) => button.title === "Scroll mode");
-
-    const newButton = document.createElement("button");
-    newButton.id = "ultreme-jump-bottom-button";
-    newButton.type = "button";
-    newButton.className = "sidebar__selector-mode";
-    newButton.title = "Jump to bottom";
-
-    const icon = document.createElement("i");
-    icon.className = "fas fa-arrow-down sidebar-gutter-font-icon";
-    newButton.appendChild(icon);
-
-    newButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      scrollMessagesToBottom();
-    });
-
-    if (scrollModeButton) scrollModeButton.after(newButton);
-    else sidebarSelector.appendChild(newButton);
-  }
-
-  function removeJumpToBottomButton() {
-    document.getElementById("ultreme-jump-bottom-button")?.remove();
+  function syncSidebarActions() {
+    const sidebar = document.querySelector(".sidebar__selector");
+    if (!sidebar) return;
+    for (const action of SIDEBAR_ACTIONS) {
+      const existing = document.getElementById(action.id);
+      if (!settings[action.key]) { existing?.remove(); continue; }
+      if (existing) continue;
+      const button = document.createElement("button");
+      button.id = action.id;
+      button.type = "button";
+      button.className = "sidebar__selector-mode" + (action.className ? " " + action.className : "");
+      button.title = action.title;
+      const content = document.createElement(action.image ? "img" : "i");
+      if (action.image) {
+        content.src = document.querySelector('link[rel~="icon"]')?.href || "/favicon.ico";
+        content.alt = "Flashii Forum";
+        content.style.cssText = "width:32px;height:32px";
+        button.style.cssText = "display:flex;align-items:center;justify-content:center;cursor:pointer";
+      } else content.className = `fas fa-${action.icon} sidebar-gutter-font-icon`;
+      button.appendChild(content);
+      button.onclick = action.run;
+      if (action.afterTitle) {
+        const ref = [...sidebar.querySelectorAll(".sidebar__selector-mode")].find(item => item.title === action.afterTitle);
+        if (ref) ref.after(button);
+        else sidebar.appendChild(button);
+      } else sidebar.insertBefore(button, sidebar.querySelector(".sidebar__selector-mode"));
+    }
   }
 
   function smartSlice(text, limit = 100, edge = 50, spill = 10) {
@@ -929,34 +802,37 @@
     return src ? new URL(src, W.location.href).searchParams.get("ver") : null;
   };
 
-  const VIDEO_EXTS = ["mp4", "webm", "ogg"];
-  const IMAGE_EXTS = [
-    "png",
-    "jpg",
-    "jpeg",
-    "gif",
-    "webp",
-    "bmp",
-    "avif",
-    "svg",
-  ];
-  const AUDIO_EXTS = ["mp3", "wav", "flac", "aac", "m4a", "opus", "oga"];
+  const MEDIA_TYPES = {
+    video: { tag: "video", label: "View Video", extensions: ["mp4", "webm", "ogg"] },
+    image: { tag: "img", label: "View Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "svg"] },
+    audio: { tag: "audio", label: "View Audio", extensions: ["mp3", "wav", "flac", "aac", "m4a", "opus", "oga"] },
+  };
 
   const getMediaKind = (url) => {
     const cleanUrl = String(url || "").split("#")[0];
     const extMatch = cleanUrl.split("?")[0].match(/\.([a-z0-9]+)$/i);
     const ext = extMatch ? extMatch[1].toLowerCase() : "";
-    if (VIDEO_EXTS.includes(ext)) return "video";
-    if (IMAGE_EXTS.includes(ext)) return "image";
-    if (AUDIO_EXTS.includes(ext)) return "audio";
-    return null;
+    return Object.keys(MEDIA_TYPES).find(kind => MEDIA_TYPES[kind].extensions.includes(ext)) || null;
   };
 
   const getMediaLabel = (kind) => {
-    if (kind === "image") return "View Image";
-    if (kind === "video") return "View Video";
-    if (kind === "audio") return "View Audio";
-    return null;
+    return MEDIA_TYPES[kind]?.label || "View Media";
+  };
+
+  const createMediaElement = (url, kind, { modal = false } = {}) => {
+    const media = document.createElement(MEDIA_TYPES[kind].tag);
+    media.src = url;
+    if (kind === "image") {
+      media.alt = modal ? "Media preview" : "Embedded media";
+      if (!modal) media.loading = "lazy";
+    } else {
+      media.controls = true;
+      if (modal) {
+        media.autoplay = true;
+        media.loop = kind === "video";
+      } else media.preload = "metadata";
+    }
+    return media;
   };
 
   const createQuoteEmbedToggle = (url, mediaKind) => {
@@ -972,30 +848,6 @@
     embed.className = "message__quote-embed";
     embed.style.display = "none";
 
-    const appendMedia = () => {
-      if (embed.childElementCount > 0) return;
-
-      if (mediaKind === "video") {
-        const video = document.createElement("video");
-        video.src = url;
-        video.controls = true;
-        video.preload = "metadata";
-        embed.appendChild(video);
-      } else if (mediaKind === "audio") {
-        const audio = document.createElement("audio");
-        audio.src = url;
-        audio.controls = true;
-        audio.preload = "metadata";
-        embed.appendChild(audio);
-      } else {
-        const img = document.createElement("img");
-        img.src = url;
-        img.alt = "Embedded media";
-        img.loading = "lazy";
-        embed.appendChild(img);
-      }
-    };
-
     toggle.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -1006,7 +858,7 @@
         return;
       }
 
-      appendMedia();
+      if (!embed.childElementCount) embed.appendChild(createMediaElement(url, mediaKind));
       embed.style.display = "";
       toggle.textContent = "Remove";
     });
@@ -1028,15 +880,10 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
 
-  const getPreviewMediaLabel = (url, explicitKind = null) => {
-    const kind = explicitKind || getMediaKind(url);
-    return getMediaLabel(kind) || "View Media";
-  };
-
   const buildPreviewMediaLink = (url, explicitKind = null) => {
     const mediaUrl = String(url || "").trim();
-    const label = getPreviewMediaLabel(mediaUrl, explicitKind);
-    return `(<a href="${escapeHtml(mediaUrl)}" class="ultreme-preview-media" data-media-url="${escapeHtml(mediaUrl)}">${escapeHtml(label)}</a>)`;
+    const label = getMediaLabel(explicitKind || getMediaKind(mediaUrl));
+    return `(<a href="${escapeHtml(mediaUrl)}" class="ultreme-preview-media">${label}</a>)`;
   };
 
   const formatQuotePreviewHtml = (msg) => {
@@ -1048,14 +895,8 @@
 
     let text = cleanMessage(msg);
 
-    text = text.replace(/\[img\]([\s\S]*?)\[\/img\]/gi, (_, url) =>
-      stash(buildPreviewMediaLink(url, "image")),
-    );
-    text = text.replace(/\[video\]([\s\S]*?)\[\/video\]/gi, (_, url) =>
-      stash(buildPreviewMediaLink(url, "video")),
-    );
-    text = text.replace(/\[audio\]([\s\S]*?)\[\/audio\]/gi, (_, url) =>
-      stash(buildPreviewMediaLink(url, "audio")),
+    text = text.replace(/\[(img|video|audio)\]([\s\S]*?)\[\/\1\]/gi, (_, tag, url) =>
+      stash(buildPreviewMediaLink(url, tag.toLowerCase() === "img" ? "image" : tag.toLowerCase())),
     );
     text = text.replace(/\[code\]([\s\S]*?)\[\/code\]/gi, (_, code) =>
       stash(`<code>${escapeHtml(code)}</code>`),
@@ -1107,7 +948,7 @@
     mediaModal.style.display = "none";
     const content = mediaModal.querySelector(".umi-media-modal-content");
     const link = mediaModal.querySelector(".umi-media-modal-download");
-    if (content) content.innerHTML = "";
+    content?.replaceChildren();
     if (link) {
       link.removeAttribute("href");
       link.removeAttribute("download");
@@ -1151,13 +992,13 @@
     document.body.appendChild(mediaModal);
   }
 
-  async function openMediaModal(url) {
+  function openMediaModal(url) {
     ensureMediaModal();
     const content = mediaModal.querySelector(".umi-media-modal-content");
     const downloadLink = mediaModal.querySelector(".umi-media-modal-download");
     if (!content) return;
 
-    content.innerHTML = "";
+    content.replaceChildren();
     if (downloadLink) {
       downloadLink.href = url;
       downloadLink.setAttribute("download", "");
@@ -1165,34 +1006,11 @@
 
     const mediaKind = getMediaKind(url);
 
-    if (mediaKind === "video") {
-      const video = document.createElement("video");
-      video.src = url;
-      video.controls = true;
-      video.autoplay = true;
-      video.loop = true;
-      video.style.maxWidth = "100%";
-      video.style.maxHeight = "100%";
-      content.appendChild(video);
-    } else if (mediaKind === "image") {
-      const img = document.createElement("img");
-      img.src = url;
-      img.alt = "Media preview";
-      img.style.maxWidth = "100%";
-      img.style.maxHeight = "100%";
-      content.appendChild(img);
-    } else if (mediaKind === "audio") {
-      const audio = document.createElement("audio");
-      audio.src = url;
-      audio.controls = true;
-      audio.autoplay = true;
-      audio.style.width = "min(100%, 640px)";
-      content.appendChild(audio);
-    } else {
+    if (!mediaKind) {
       W.open(url, "_blank", "noopener,noreferrer");
       return;
     }
-
+    content.appendChild(createMediaElement(url, mediaKind, { modal: true }));
     mediaModal.style.display = "flex";
   }
 
@@ -1232,25 +1050,15 @@
     new Promise((resolve, reject) => {
       const bust = `${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`;
 
-      if (
-        typeof GM !== "undefined" &&
-        typeof GM.xmlHttpRequest === "function"
-      ) {
-        GM.xmlHttpRequest({
+      const request = typeof GM !== "undefined" && typeof GM.xmlHttpRequest === "function"
+        ? GM.xmlHttpRequest.bind(GM)
+        : typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null;
+      if (request) {
+        request({
           method: "GET",
           url: bust,
           onload: (r) => resolve(r.responseText || ""),
-          onerror: () => reject(new Error("GM.xmlHttpRequest failed")),
-        });
-        return;
-      }
-
-      if (typeof GM_xmlhttpRequest === "function") {
-        GM_xmlhttpRequest({
-          method: "GET",
-          url: bust,
-          onload: (r) => resolve(r.responseText || ""),
-          onerror: () => reject(new Error("GM_xmlhttpRequest failed")),
+          onerror: () => reject(new Error("Update request failed")),
         });
         return;
       }
@@ -1318,10 +1126,7 @@
     insertBanner(prompt);
   };
 
-  const runAutoUpdateCheckOnce = async () => {
-    if (didAutoUpdateCheck) return;
-    didAutoUpdateCheck = true;
-
+  const runAutoUpdateCheck = async () => {
     const updateInfo = await checkForUpdates();
     if (!updateInfo) return;
 
@@ -1377,95 +1182,10 @@
     }
   };
 
-  setInterval(() => {
-    didAutoUpdateCheck = false;
-    runAutoUpdateCheckOnce();
-  }, UPDATE_CHECK_INTERVAL_MS);
-
-  document.addEventListener("mouseup", () => {
-    const sel = W.getSelection?.();
-    const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
-    const inside =
-      range?.commonAncestorContainer?.closest?.("#umi-messages") ||
-      range?.commonAncestorContainer?.parentElement?.closest?.("#umi-messages");
-    if (!inside) {
-      selectedText = "";
-      selectedQuoteData = null;
-      return;
-    }
-
-    selectedText = sel.toString().trim();
-    const sourceMessage =
-      range?.commonAncestorContainer?.closest?.(".message") ||
-      range?.commonAncestorContainer?.parentElement?.closest?.(".message");
-    selectedQuoteData =
-      selectedText && sourceMessage
-        ? buildQuoteDataFromMessageElement(sourceMessage, selectedText)
-        : null;
-  });
-
-  document.addEventListener("click", (e) => {
-    const t = e.target;
-    if (!t || !(t instanceof Element)) return;
-
-    const previewMediaLink = t.closest(".ultreme-preview-media");
-    if (previewMediaLink instanceof HTMLAnchorElement) {
-      e.preventDefault();
-      openMediaModal(
-        previewMediaLink.dataset.mediaUrl || previewMediaLink.href,
-      );
-      return;
-    }
-
-    if (
-      !settings.interceptNativeQuoteButton &&
-      t.matches("button.markup__button") &&
-      t.textContent.trim().toLowerCase() === "quote"
-    ) {
-      setTimeout(() => {
-        const input = document.querySelector("textarea.input__text");
-        if (input && selectedText) {
-          const quoted = `[quote]${selectedText}[/quote]`;
-          const start = input.selectionStart;
-          const end = input.selectionEnd;
-          // The native button wraps the textarea selection before this handler.
-          const before = input.value.slice(0, start);
-          const after = input.value.slice(end);
-          input.value = before.endsWith("[quote]") && after.startsWith("[/quote]")
-            ? before + selectedText + after
-            : input.value + quoted;
-          input.focus();
-          selectedText = "";
-          selectedQuoteData = null;
-        }
-      }, 50);
-    }
-  });
-
-  document.addEventListener(
-    "click",
-    (e) => {
-      const t = e.target;
-      if (!(t instanceof Element)) return;
-      if (!settings.interceptNativeQuoteButton || !selectedQuoteData) return;
-      if (
-        !t.matches("button.markup__button") ||
-        t.textContent.trim().toLowerCase() !== "quote"
-      )
-        return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation?.();
-      applySelectedQuote?.();
-    },
-    true,
-  );
-
   let initialized = false;
   const initialize = () => {
     if (initialized || !W.Umi?.User?.getCurrentUser?.()?.id ||
-        !getMessagesContainer() || !document.querySelector("textarea.input__text")) return;
+        !getMessagesContainer() || !getChatInput()) return;
     initialized = true;
 
     const isOwnMessage = (msg) =>
@@ -1475,7 +1195,8 @@
         W.Umi.Server.sendMessage(`/delete ${msg.dataset.id}`);
     };
 
-    runAutoUpdateCheckOnce();
+    runAutoUpdateCheck();
+    setInterval(runAutoUpdateCheck, UPDATE_CHECK_INTERVAL_MS);
 
     document.body.dataset.ultremeQuoteBlocks = settings.enableQuoteBlocks ? "1" : "0";
 
@@ -1504,9 +1225,7 @@
         const n_cnt = u_state.cnt + 1;
         msg.classList.add("konkira-summary");
         msg.setAttribute("konkira-count", n_cnt);
-        const t_el =
-          msg.querySelector(".message__text") ||
-          msg.querySelector(".message-tiny-text");
+        const t_el = getMessageText(msg);
         if (t_el) {
           if (n_cnt === 2 && u_state.start_t === "join" && type === "leave") {
             t_el.innerHTML = `&nbsp;lurked`;
@@ -1578,9 +1297,7 @@
           margin-left: auto;
           gap: 0.25em;
         }
-        .message .quote-button,
-        .message .delete-button,
-        .message .goto-button {
+        .message .message-button-container button {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -1630,19 +1347,13 @@
           outline: 2px solid var(--ultreme-action-accent, Highlight);
           outline-offset: 2px;
         }
-        .message .quote-button:hover,
-        .message .delete-button:hover,
-        .message .goto-button:hover {
+        .message .message-button-container button:hover {
           background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
         }
-        .message .quote-button:active,
-        .message .delete-button:active,
-        .message .goto-button:active {
+        .message .message-button-container button:active {
           background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
         }
-        .message:hover .quote-button,
-        .message:hover .delete-button,
-        .message:hover .goto-button,
+        .message:hover .message-button-container button,
         .message:focus-within .message-button-container button,
         body[data-ultreme-button-visibility="always"] .message-button-container button {
           opacity: 1;
@@ -1659,16 +1370,17 @@
             pointer-events: auto;
           }
         }
-        #quote-preview {
+        #quote-preview,
+        #ultreme-update-prompt {
           background: var(--theme-colour-input-background, light-dark(#eee, #111));
           border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
           padding: 6px 10px;
           font-size: 13px;
           margin: 4px -1px;
           display: flex;
-          align-items: flex-start;
           max-width: 100%;
         }
+        #quote-preview { align-items: flex-start; }
         #quote-preview span {
           flex: 1 1 auto;
           min-width: 0;
@@ -1683,7 +1395,9 @@
           border-radius: 2px;
           background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
         }
-        #quote-preview .ultreme-preview-media {
+        #quote-preview .ultreme-preview-media,
+        .message__quote-text a.message__quote-media,
+        .message__quote-text .message__quote-embed-toggle {
           color: var(--theme-colour-main-accent, #8559a5);
           text-decoration: none;
           cursor: pointer;
@@ -1695,9 +1409,9 @@
           color: var(--theme-colour-main-colour, CanvasText);
           filter: brightness(0.8);
         }
-        #cancel-quote {
+        #cancel-quote,
+        #ultreme-update-dismiss {
           flex: 0 0 auto;
-          margin-left: 6px;
           background: none;
           border: none;
           color: var(--theme-colour-main-colour, CanvasText);
@@ -1705,18 +1419,11 @@
           font-weight: bold;
           padding: 0 6px;
           font-size: 13px;
-          align-self: flex-start;
         }
+        #cancel-quote { margin-left: 6px; align-self: flex-start; }
         #ultreme-update-prompt {
-          background: var(--theme-colour-input-background, light-dark(#eee, #111));
-          border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
-          padding: 6px 10px;
-          font-size: 13px;
-          margin: 4px -1px;
-          display: flex;
           align-items: center;
           gap: 10px;
-          max-width: 100%;
         }
         #ultreme-update-prompt > span {
           flex: 1 1 auto;
@@ -1743,16 +1450,6 @@
         }
         .ultreme-update-actions a:active {
           background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
-        }
-        #ultreme-update-dismiss {
-          flex: 0 0 auto;
-          background: none;
-          border: none;
-          color: var(--theme-colour-main-colour, CanvasText);
-          cursor: pointer;
-          font-weight: bold;
-          padding: 0 6px;
-          font-size: 13px;
         }
 
         .highlight-temp {
@@ -1847,16 +1544,6 @@
         .message__quote-text {
           white-space: normal;
           word-break: break-word;
-        }
-        .message__quote-text a.message__quote-media {
-          color: var(--theme-colour-main-accent, #8559a5);
-          text-decoration: none;
-          cursor: pointer;
-        }
-        .message__quote-text .message__quote-embed-toggle {
-          color: var(--theme-colour-main-accent, #8559a5);
-          text-decoration: none;
-          cursor: pointer;
         }
         .message__quote-embed {
           margin-top: 6px;
@@ -2106,6 +1793,7 @@
           box-sizing: border-box;
           overflow: hidden;
         }
+        #umi-media-modal audio { width: min(100%, 640px); }
         #umi-media-modal img,
         #umi-media-modal video {
           max-width: 100%;
@@ -2257,11 +1945,11 @@
 
       const span = preview.querySelector("span");
 
+      const displayHtml = formatQuotePreviewHtml(msg);
+      const showColor = color || DEFAULT_NAME_COLOR;
+      const nameHtml = `<b style="color:${escapeHtml(showColor)};">${escapeHtml(name)}</b>`;
       const updateTime = () => {
         const time = getRelativeTime(created);
-        const displayHtml = formatQuotePreviewHtml(msg);
-        const showColor = color || DEFAULT_NAME_COLOR;
-        const nameHtml = `<b style="color:${escapeHtml(showColor)};">${escapeHtml(name)}</b>`;
         span.innerHTML = `Quoting ${nameHtml} @ ${time} — ${displayHtml}`;
       };
 
@@ -2282,7 +1970,7 @@
       selectedText = "";
       selectedQuoteData = null;
       showQuotePreview(pendingQuote);
-      document.querySelector("textarea.input__text")?.focus();
+      getChatInput()?.focus();
     };
 
     const clearSelectedMessage = () => {
@@ -2291,20 +1979,130 @@
       selectedMessageIndex = -1;
     };
 
+    const selectQuoteSource = (msg, data) => {
+      clearSelectedMessage();
+      msg.classList.add("selected-quote");
+      applyQuote(data);
+    };
+
     const selectMessage = (index) => {
       const messages = getVisibleMessages();
       clearSelectedMessage();
 
       if (index >= 0 && index < messages.length) {
-        selectedMessageIndex = index;
         const msg = messages[index];
-        msg.classList.add("selected-quote");
         const messageData = buildQuoteDataFromMessageElement(msg);
-        if (messageData) applyQuote(messageData);
+        if (messageData) selectQuoteSource(msg, messageData);
+        selectedMessageIndex = index;
         return;
       }
 
       clearPendingQuote({ clearSelection: false });
+    };
+
+    document.addEventListener("mouseup", () => {
+      const sel = W.getSelection?.();
+      const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+      const inside =
+        range?.commonAncestorContainer?.closest?.("#umi-messages") ||
+        range?.commonAncestorContainer?.parentElement?.closest?.("#umi-messages");
+      if (!inside) {
+        selectedText = "";
+        selectedQuoteData = null;
+        return;
+      }
+
+      selectedText = sel.toString().trim();
+      const sourceMessage =
+        range?.commonAncestorContainer?.closest?.(".message") ||
+        range?.commonAncestorContainer?.parentElement?.closest?.(".message");
+      selectedQuoteData =
+        selectedText && sourceMessage
+          ? buildQuoteDataFromMessageElement(sourceMessage, selectedText)
+          : null;
+    });
+
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (!t || !(t instanceof Element)) return;
+
+      const previewMediaLink = t.closest(".ultreme-preview-media, .message__quote-media");
+      if (previewMediaLink instanceof HTMLAnchorElement) {
+        e.preventDefault();
+        openMediaModal(previewMediaLink.href);
+        return;
+      }
+
+      if (
+        !settings.interceptNativeQuoteButton &&
+        t.matches("button.markup__button") &&
+        t.textContent.trim().toLowerCase() === "quote"
+      ) {
+        setTimeout(() => {
+          const input = getChatInput();
+          if (input && selectedText) {
+            const quoted = `[quote]${selectedText}[/quote]`;
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            // The native button wraps the textarea selection before this handler.
+            const before = input.value.slice(0, start);
+            const after = input.value.slice(end);
+            input.value = before.endsWith("[quote]") && after.startsWith("[/quote]")
+              ? before + selectedText + after
+              : input.value + quoted;
+            input.focus();
+            selectedText = "";
+            selectedQuoteData = null;
+          }
+        }, 50);
+      }
+    });
+
+    document.addEventListener(
+      "click",
+      (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        if (!settings.interceptNativeQuoteButton || !selectedQuoteData) return;
+        if (
+          !t.matches("button.markup__button") ||
+          t.textContent.trim().toLowerCase() !== "quote"
+        )
+          return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+        applyQuote(selectedQuoteData);
+      },
+      true,
+    );
+
+    const messageActions = [
+      {
+        className: "delete-button", icon: "trash-alt", text: "Delete", title: "Delete this message",
+        available: ({ msg }) => isOwnMessage(msg),
+        visible: () => settings.enableDelete && settings.showDeleteButton,
+        run: ({ msg }) => deleteMessage(msg),
+      },
+      {
+        className: "quote-button", icon: "quote-right", text: "Quote", title: "Quote this message",
+        visible: () => settings.showQuoteButton,
+        run: ({ msg, data }) => selectQuoteSource(msg,
+          selectedQuoteData?.msg && selectedQuoteData.id === data.id ? { ...selectedQuoteData } : data),
+      },
+      {
+        className: "goto-button", icon: "arrow-up", text: "Go to quoted", title: "Scroll to quoted message",
+        available: ({ quote }) => !!quote.messageId,
+        visible: () => settings.showGotoButton,
+        run: ({ quote }) => scrollToMessageId(quote.messageId),
+      },
+    ];
+    const syncMessageActionVisibility = () => {
+      for (const action of messageActions)
+        document.querySelectorAll(`.${action.className}`).forEach(button => {
+          button.style.display = action.visible() ? "" : "none";
+        });
     };
 
     const appendMessageButton = (
@@ -2329,11 +2127,9 @@
       return button;
     };
 
-    const enhanceScriptQuote = (msg, textEl) => {
-      if (!textEl) return;
-      if (msg.dataset.enhancedQuote === "1") return;
-
-      const anchor = textEl.querySelector('a[href^="#"]');
+    const enhanceScriptQuote = (msg, textEl, reference) => {
+      const { anchor, messageId: targetId, authorId: quotedAuthorIdFromHref,
+        avatarVersion: quotedAvatarVersion } = reference;
       const qEl = textEl.querySelector("q");
       const metaI = textEl.querySelector("i");
       if (!anchor || !qEl || !metaI) return;
@@ -2341,12 +2137,6 @@
       const aText = anchor.textContent || "";
       if (aText.length !== 1 || aText.charCodeAt(0) !== 0x200c) return;
 
-      const href = anchor.getAttribute("href") || "";
-      const {
-        messageId: targetId,
-        authorId: quotedAuthorIdFromHref,
-        avatarVersion: quotedAvatarVersion,
-      } = parseQuoteHref(href);
       if (!targetId) return;
 
       const arrowSpan = [...textEl.querySelectorAll("span")].find((s) =>
@@ -2364,9 +2154,7 @@
         quoteBr.before(document.createTextNode(" "));
       });
 
-      const targetMsg = targetId
-        ? document.getElementById(`message-${targetId}`)
-        : null;
+      const targetMsg = document.getElementById(`message-${targetId}`);
 
       const quoteContainer = document.createElement("div");
       quoteContainer.className = "message__quote";
@@ -2396,14 +2184,9 @@
 
       if (targetMsg) {
         const targetUserEl = targetMsg.querySelector(".message__user");
-        const rawColor = targetUserEl?.style?.color;
         const targetName = targetUserEl?.textContent?.trim();
         if (targetName) quotedName = targetName;
-        if (rawColor && rawColor !== "inherit") {
-          quotedColor = rawColor.startsWith("#")
-            ? rawColor
-            : rgbToHex(rawColor);
-        }
+        quotedColor = getUserColor(targetUserEl);
         quotedCreated = targetMsg.getAttribute("data-created");
       } else {
         const nameB = metaI.querySelector("b");
@@ -2411,12 +2194,7 @@
           metaI.querySelector('span[style*="color"]') ||
           nameB?.parentElement ||
           nameB;
-        const rawColor = colourSource?.style?.color || null;
-        if (rawColor && rawColor !== "inherit") {
-          quotedColor = rawColor.startsWith("#")
-            ? rawColor
-            : rgbToHex(rawColor);
-        }
+        quotedColor = getUserColor(colourSource);
       }
 
       const quotedAuthorId =
@@ -2452,63 +2230,40 @@
       const rawQuoted = getElementTextWithBreaks(qEl);
       const withoutEmbed = rawQuoted.replace(/\[Embed\]/gi, "").trim();
 
-      const urlRe = /(https?:)?\/\/\S+/g;
-      const hasUrl = urlRe.test(withoutEmbed);
-      urlRe.lastIndex = 0;
+      let lastIndex = 0;
+      for (const match of withoutEmbed.matchAll(/(https?:)?\/\/\S+/g)) {
+        const urlStart = match.index;
 
-      if (hasUrl) {
-        let lastIndex = 0;
-        let match;
-        while ((match = urlRe.exec(withoutEmbed)) !== null) {
-          const urlStart = match.index;
-          const urlEnd = urlRe.lastIndex;
+        const before = withoutEmbed.slice(lastIndex, urlStart);
+        if (before) textDiv.appendChild(document.createTextNode(before));
 
-          const before = withoutEmbed.slice(lastIndex, urlStart);
-          if (before) textDiv.appendChild(document.createTextNode(before));
+        let url = match[0];
+        if (!/^https?:\/\//i.test(url)) url = "https:" + url;
 
-          let url = match[0];
-          if (!/^https?:\/\//i.test(url)) url = "https:" + url;
-
-          const trailingWhitespace = url.match(/\s+$/)?.[0] || "";
-          if (trailingWhitespace) {
-            url = url.slice(0, -trailingWhitespace.length);
-          }
-
-          const mediaKind = getMediaKind(url);
-          if (mediaKind) {
-            textDiv.appendChild(document.createTextNode("("));
-            const link = document.createElement("a");
-            link.href = url;
-            link.textContent = getMediaLabel(mediaKind);
-            link.className = "message__quote-media";
-            link.addEventListener("click", (ev) => {
-              ev.preventDefault();
-              openMediaModal(url);
-            });
-            textDiv.appendChild(link);
-            textDiv.appendChild(document.createTextNode(") "));
-            textDiv.appendChild(createQuoteEmbedToggle(url, mediaKind));
-          } else {
-            const link = document.createElement("a");
-            link.href = url;
-            link.textContent = match[0];
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            textDiv.appendChild(link);
-          }
-
-          if (trailingWhitespace) {
-            textDiv.appendChild(document.createTextNode(trailingWhitespace));
-          }
-
-          lastIndex = urlEnd;
+        const mediaKind = getMediaKind(url);
+        if (mediaKind) {
+          textDiv.appendChild(document.createTextNode("("));
+          const link = document.createElement("a");
+          link.href = url;
+          link.textContent = getMediaLabel(mediaKind);
+          link.className = "message__quote-media";
+          textDiv.appendChild(link);
+          textDiv.appendChild(document.createTextNode(") "));
+          textDiv.appendChild(createQuoteEmbedToggle(url, mediaKind));
+        } else {
+          const link = document.createElement("a");
+          link.href = url;
+          link.textContent = match[0];
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          textDiv.appendChild(link);
         }
 
-        const tail = withoutEmbed.slice(lastIndex);
-        if (tail) textDiv.appendChild(document.createTextNode(tail));
-      } else {
-        textDiv.textContent = withoutEmbed;
+        lastIndex = urlStart + match[0].length;
       }
+
+      const tail = withoutEmbed.slice(lastIndex);
+      if (tail) textDiv.appendChild(document.createTextNode(tail));
 
       body.appendChild(header);
       body.appendChild(textDiv);
@@ -2542,36 +2297,31 @@
         meta.parentNode.insertBefore(quoteContainer, meta.nextSibling);
       }
 
-      if (targetId) {
-        quoteContainer.addEventListener("click", (ev) => {
-          if (
-            ev.target?.closest?.(
-              ".message__quote-media, .message__quote-embed-toggle, .message__quote-embed",
-            )
+      quoteContainer.addEventListener("click", (ev) => {
+        if (
+          ev.target?.closest?.(
+            ".message__quote-media, .message__quote-embed-toggle, .message__quote-embed",
           )
-            return;
-          scrollToMessageId(targetId);
-        });
-      }
-
-      msg.dataset.enhancedQuote = "1";
+        )
+          return;
+        scrollToMessageId(targetId);
+      });
     };
 
     const setupUserscriptSettingsTab = () => {
-      if (W.__ultremeSidebarMenuInstalled) return true;
-
       const menusApi = W.Umi?.UI?.Menus;
-      if (!menusApi || typeof menusApi.Add !== "function") return false;
+      if (!menusApi || typeof menusApi.Add !== "function") return;
+      if (document.getElementById(`umi-menus-${ULTREME_MENU_ID}`)) return;
 
       try {
         menusApi.Add(ULTREME_MENU_ID, "Ultreme Script");
-      } catch {}
+      } catch { return; }
 
       const panel = document.getElementById(`umi-menus-${ULTREME_MENU_ID}`);
       const iconHost = document.getElementById(
         `umi-menu-icons-${ULTREME_MENU_ID}`,
       );
-      if (!panel || !iconHost) return false;
+      if (!panel || !iconHost) return;
 
       if (!iconHost.querySelector(".fa-code")) {
         const i = document.createElement("i");
@@ -2579,238 +2329,205 @@
         iconHost.appendChild(i);
       }
 
-      if (!panel.__ultremeBuilt) {
-        panel.__ultremeBuilt = true;
-        panel.classList.add(
-          "sidebar__menu--settings",
-          "sidebar__menu--userscript",
-        );
+      panel.classList.add(
+        "sidebar__menu--settings",
+        "sidebar__menu--userscript",
+      );
 
-        const createCategory = (titleText) => {
-          const wrapper = document.createElement("div");
+      const createCategory = (titleText) => {
+        const wrapper = document.createElement("div");
 
-          const header = document.createElement("div");
-          header.className = "setting__category-title";
-          header.textContent = titleText;
+        const header = document.createElement("div");
+        header.className = "setting__category-title";
+        header.textContent = titleText;
 
-          const body = document.createElement("div");
-          body.className = "setting__category";
+        const body = document.createElement("div");
+        body.className = "setting__category";
 
-          wrapper.append(header, body);
-          panel.appendChild(wrapper);
+        wrapper.append(header, body);
+        panel.appendChild(wrapper);
 
-          let open = true;
-          header.addEventListener("click", () => {
-            const duration = 260;
-            const ease = (t) => 1 - Math.pow(1 - t, 3);
-
-            const startHeight = body.getBoundingClientRect().height;
-            body.style.overflow = "hidden";
-
-            let endHeight = 0;
-            if (!open) {
-              body.style.height = "auto";
-              endHeight = body.getBoundingClientRect().height;
-              body.style.height = `${startHeight}px`;
-            }
-
-            const from = startHeight;
-            const to = open ? 0 : endHeight;
-            open = !open;
-
-            const start = performance.now();
-            const tick = (now) => {
-              const t = Math.min(1, (now - start) / duration);
-              const v = from + (to - from) * ease(t);
-              body.style.height = `${v}px`;
-              if (t < 1) requestAnimationFrame(tick);
-              else {
-                body.style.height = open ? "auto" : "0";
-                body.style.overflow = "";
-              }
-            };
-            requestAnimationFrame(tick);
-          });
-
-          return body;
-        };
-
-        const createButtonRow = (body, text, onClick) => {
-          const wrap = document.createElement("div");
-          wrap.className = "setting__container setting__container--button";
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "setting__input";
-          btn.textContent = text;
-          btn.addEventListener("click", onClick);
-          wrap.appendChild(btn);
-          body.appendChild(wrap);
-          return { wrap, btn };
-        };
-
-        const setButtonsVisible = (selector, visible) => {
-          document.querySelectorAll(selector).forEach(button => {
-            button.style.display = visible ? "" : "none";
-          });
-        };
-        const syncDeleteButtons = () => setButtonsVisible(".delete-button",
-          settings.enableDelete && settings.showDeleteButton);
-        const settingEffects = {
-          "messageButtonContent": applyMessageButtonSettings,
-          "messageButtonVisibility": applyMessageButtonSettings,
-          "messageButtonAppearance": applyMessageButtonSettings,
-          "showQuoteButton": () => setButtonsVisible(".quote-button", settings.showQuoteButton),
-          "showGotoButton": () => setButtonsVisible(".goto-button", settings.showGotoButton),
-          "enableQuoteBlocks": () => {
-            document.body.dataset.ultremeQuoteBlocks = settings.enableQuoteBlocks ? "1" : "0";
-          },
-          "enableDelete": syncDeleteButtons,
-          "showDeleteButton": syncDeleteButtons,
-          "enableKonkira": () => {
-            if (!settings.enableKonkira) konkiraStates.clear();
-          },
-          "enableForumButton": () => {
-            if (settings.enableForumButton) addForumButton();
-            else removeForumButton();
-          },
-          "enableJumpToBottomButton": () => {
-            if (settings.enableJumpToBottomButton) addJumpToBottomButton();
-            else removeJumpToBottomButton();
-          },
-        };
-
-        const controls = [];
-        const syncControls = () => {
-          for (const { field, row, inputs } of controls) {
-            const visible = field.visible?.(settings) ?? true;
-            const enabled = visible && (field.enabled?.(settings) ?? true);
-            row.hidden = !visible;
-            row.classList.toggle("ultreme-setting-disabled", !enabled);
-            for (const input of inputs) {
-              input.disabled = !enabled;
-              if (field.control === "select") input.value = settings[field.key];
-              else input.checked = field.options
-                ? input.value === settings[field.key]
-                : settings[field.key];
-            }
-          }
-        };
-
-        const sections = new Map();
-        for (const section of SETTINGS_SECTIONS) {
-          const body = createCategory(section.title);
-          body.dataset.settingsSection = section.id;
-          sections.set(section.id, body);
-          for (const field of section.fields) {
-            const isSelect = field.control === "select";
-            const isRadio = !!field.options && !isSelect;
-            const row = document.createElement(isRadio ? "fieldset" : "div");
-            row.className = isRadio ? "ultreme-setting-field" :
-              `setting__container setting__container--${isSelect ? "select" : "checkbox"}`;
-            row.dataset.setting = field.key;
-            body.appendChild(row);
-            if (isRadio) {
-              const legend = document.createElement("legend");
-              legend.className = "ultreme-setting-subtitle";
-              legend.textContent = field.label;
-              row.appendChild(legend);
-            }
-            const inputs = [];
-            for (const option of (isSelect ? null : field.options) || [{ label: field.label }]) {
-              const label = document.createElement("label");
-              label.className = "setting__label";
-              const input = document.createElement(isSelect ? "select" : "input");
-              if (!isSelect) input.type = isRadio ? "radio" : "checkbox";
-              input.className = "setting__input " +
-                (option.className || ("js-ultreme-" + field.key));
-              if (field.options) {
-                input.name = STORAGE_PREFIX + field.key;
-                if (isRadio) input.value = option.value;
-                else for (const choice of field.options) {
-                  const item = document.createElement("option");
-                  item.value = choice.value;
-                  item.textContent = choice.label;
-                  input.appendChild(item);
-                }
-              }
-              const text = document.createElement("span");
-              text.textContent = option.label;
-              if (isSelect) label.append(text, input);
-              else label.append(input, text);
-              if (isRadio) {
-                const choice = document.createElement("div");
-                choice.className = "setting__container setting__container--checkbox";
-                choice.appendChild(label);
-                row.appendChild(choice);
-              } else row.appendChild(label);
-              inputs.push(input);
-              input.addEventListener("change", () => {
-                if (input.disabled || (isRadio && !input.checked)) return;
-                saveSetting(field.key, field.options ? input.value : input.checked);
-                syncControls();
-                if (section.id === "uploads") {
-                  if (settings.enableUploadProgress) {
-                    refreshUploadProgressUI();
-                    showUploadProgressPreview();
-                  } else disableUploadProgressUI();
-                } else settingEffects[field.key]?.();
-              });
-            }
-            if (field.hint) {
-              const hint = document.createElement("div");
-              hint.className = "setting__hint";
-              hint.textContent = field.hint;
-              row.appendChild(hint);
-            }
-            controls.push({ field, row, inputs });
-          }
-        }
-        syncControls();
-        const aboutBody = sections.get("about");
-        aboutBody.classList.add("ultreme-about");
-
-        const ver = getInstalledVersion() || "unknown";
-
-        const addLine = (text) => {
-          const d = document.createElement("div");
-          d.className = "mami-copyright";
-          d.textContent = text;
-          aboutBody.appendChild(d);
-          return d;
-        };
-
-        addLine("Flashii Ultreme Script");
-        addLine(`Version ${ver}`);
-        addLine("thank you to all users of flashii <3");
-
-        createButtonRow(aboutBody, "View Project on Patchii", () =>
-          W.open(PATCHII_PAGE_URL, "_blank", "noopener,noreferrer"),
-        );
-
-        createButtonRow(aboutBody, "Check for updates", () => {
-          runManualUpdateCheck(ui);
+        let open = true;
+        let animation = null;
+        header.addEventListener("click", () => {
+          const startHeight = body.getBoundingClientRect().height;
+          animation?.cancel();
+          open = !open;
+          body.style.overflow = "hidden";
+          body.style.height = open ? "auto" : "0px";
+          const endHeight = body.getBoundingClientRect().height;
+          animation = body.animate([
+            { height: `${startHeight}px` }, { height: `${endHeight}px` },
+          ], { duration: 260, easing: "cubic-bezier(0.33, 1, 0.68, 1)" });
+          animation.onfinish = () => {
+            body.style.height = open ? "auto" : "0px";
+            body.style.overflow = "";
+            animation = null;
+          };
         });
 
-        const updateStatusEl = addLine("");
-        updateStatusEl.id = "ultreme-about-update-status";
+        return body;
+      };
 
-        const updateNowRow = createButtonRow(aboutBody, "Update now", () =>
-          W.open(PATCHII_USERJS_URL, "_blank", "noopener,noreferrer"),
-        );
-        updateNowRow.wrap.style.display = "none";
+      const createButtonRow = (body, text, onClick) => {
+        const wrap = document.createElement("div");
+        wrap.className = "setting__container setting__container--button";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "setting__input";
+        btn.textContent = text;
+        btn.addEventListener("click", onClick);
+        wrap.appendChild(btn);
+        body.appendChild(wrap);
+        return wrap;
+      };
 
-        const ui = {
-          setStatus: (text) => {
-            updateStatusEl.textContent = text || "";
-          },
-          setUpdateAvailable: (on) => {
-            updateNowRow.wrap.style.display = on ? "" : "none";
-          },
-        };
+      const settingEffects = {
+        "messageButtonContent": applyMessageButtonSettings,
+        "messageButtonVisibility": applyMessageButtonSettings,
+        "messageButtonAppearance": applyMessageButtonSettings,
+        "showQuoteButton": syncMessageActionVisibility,
+        "showGotoButton": syncMessageActionVisibility,
+        "enableQuoteBlocks": () => {
+          document.body.dataset.ultremeQuoteBlocks = settings.enableQuoteBlocks ? "1" : "0";
+        },
+        "enableDelete": syncMessageActionVisibility,
+        "showDeleteButton": syncMessageActionVisibility,
+        "enableKonkira": () => {
+          if (!settings.enableKonkira) konkiraStates.clear();
+        },
+        "enableForumButton": syncSidebarActions,
+        "enableJumpToBottomButton": syncSidebarActions,
+      };
+
+      const controls = [];
+      const syncControls = () => {
+        for (const { field, row, inputs } of controls) {
+          const visible = field.visible?.(settings) ?? true;
+          const enabled = visible && (field.enabled?.(settings) ?? true);
+          row.hidden = !visible;
+          row.classList.toggle("ultreme-setting-disabled", !enabled);
+          for (const input of inputs) {
+            input.disabled = !enabled;
+            if (field.control === "select") input.value = settings[field.key];
+            else input.checked = field.options
+              ? input.value === settings[field.key]
+              : settings[field.key];
+          }
+        }
+      };
+
+      const sections = new Map();
+      for (const section of SETTINGS_SECTIONS) {
+        const body = createCategory(section.title);
+        body.dataset.settingsSection = section.id;
+        sections.set(section.id, body);
+        for (const field of section.fields) {
+          const isSelect = field.control === "select";
+          const isRadio = !!field.options && !isSelect;
+          const row = document.createElement(isRadio ? "fieldset" : "div");
+          row.className = isRadio ? "ultreme-setting-field" :
+            `setting__container setting__container--${isSelect ? "select" : "checkbox"}`;
+          row.dataset.setting = field.key;
+          body.appendChild(row);
+          if (isRadio) {
+            const legend = document.createElement("legend");
+            legend.className = "ultreme-setting-subtitle";
+            legend.textContent = field.label;
+            row.appendChild(legend);
+          }
+          const inputs = [];
+          for (const option of (isSelect ? null : field.options) || [{ label: field.label }]) {
+            const label = document.createElement("label");
+            label.className = "setting__label";
+            const input = document.createElement(isSelect ? "select" : "input");
+            if (!isSelect) input.type = isRadio ? "radio" : "checkbox";
+            input.className = "setting__input " +
+              (option.className || ("js-ultreme-" + field.key));
+            if (field.options) {
+              input.name = STORAGE_PREFIX + field.key;
+              if (isRadio) input.value = option.value;
+              else for (const choice of field.options) {
+                const item = document.createElement("option");
+                item.value = choice.value;
+                item.textContent = choice.label;
+                input.appendChild(item);
+              }
+            }
+            const text = document.createElement("span");
+            text.textContent = option.label;
+            if (isSelect) label.append(text, input);
+            else label.append(input, text);
+            if (isRadio) {
+              const choice = document.createElement("div");
+              choice.className = "setting__container setting__container--checkbox";
+              choice.appendChild(label);
+              row.appendChild(choice);
+            } else row.appendChild(label);
+            inputs.push(input);
+            input.addEventListener("change", () => {
+              if (input.disabled || (isRadio && !input.checked)) return;
+              saveSetting(field.key, field.options ? input.value : input.checked);
+              syncControls();
+              if (section.id === "uploads") {
+                if (settings.enableUploadProgress) {
+                  refreshUploadProgressUI();
+                  showUploadProgressPreview();
+                } else disableUploadProgressUI();
+              } else settingEffects[field.key]?.();
+            });
+          }
+          if (field.hint) {
+            const hint = document.createElement("div");
+            hint.className = "setting__hint";
+            hint.textContent = field.hint;
+            row.appendChild(hint);
+          }
+          controls.push({ field, row, inputs });
+        }
       }
+      syncControls();
+      const aboutBody = sections.get("about");
+      aboutBody.classList.add("ultreme-about");
 
-      W.__ultremeSidebarMenuInstalled = true;
-      return true;
+      const ver = getInstalledVersion() || "unknown";
+
+      const addLine = (text) => {
+        const d = document.createElement("div");
+        d.className = "mami-copyright";
+        d.textContent = text;
+        aboutBody.appendChild(d);
+        return d;
+      };
+
+      addLine("Flashii Ultreme Script");
+      addLine(`Version ${ver}`);
+      addLine("thank you to all users of flashii <3");
+
+      createButtonRow(aboutBody, "View Project on Patchii", () =>
+        W.open(PATCHII_PAGE_URL, "_blank", "noopener,noreferrer"),
+      );
+
+      createButtonRow(aboutBody, "Check for updates", () => {
+        runManualUpdateCheck(ui);
+      });
+
+      const updateStatusEl = addLine("");
+      updateStatusEl.id = "ultreme-about-update-status";
+
+      const updateNowRow = createButtonRow(aboutBody, "Update now", () =>
+        W.open(PATCHII_USERJS_URL, "_blank", "noopener,noreferrer"),
+      );
+      updateNowRow.style.display = "none";
+
+      const ui = {
+        setStatus: (text) => {
+          updateStatusEl.textContent = text || "";
+        },
+        setUpdateAvailable: (on) => {
+          updateNowRow.style.display = on ? "" : "none";
+        },
+      };
     };
 
     const processMessage = (msg) => {
@@ -2820,12 +2537,9 @@
       if (!messageData) return;
       processedMessages.add(msg);
 
-      const { id } = messageData;
       const author = msg.dataset.author;
 
-      const textEl =
-        msg.querySelector(".message__text") ||
-        msg.querySelector(".message-tiny-text");
+      const textEl = getMessageText(msg);
       if (!textEl) return;
 
       const sysType = getConnectionNoticeType(msg);
@@ -2846,80 +2560,29 @@
             deleteMessage(msg);
             return;
           }
-          clearSelectedMessage();
-          msg.classList.add("selected-quote");
-          applyQuote(messageData);
+          selectQuoteSource(msg, messageData);
         };
       }
 
-      const relTimeEl = textEl.querySelector("i");
-      if (relTimeEl) {
-        relTimeEl.onclick = () => {
-          const a = textEl.querySelector('a[href^="#"]');
-          const { messageId } = parseQuoteHref(a?.getAttribute("href"));
-          if (messageId) scrollToMessageId(messageId);
-        };
+      const context = { msg, data: messageData, quote: getQuoteReference(textEl) };
+      if (context.quote.messageId) {
+        const meta = textEl.querySelector("i");
+        if (meta) meta.onclick = () => scrollToMessageId(context.quote.messageId);
+      }
+      const btnContainer = document.createElement("div");
+      btnContainer.className = "message-button-container";
+      btnContainer.setAttribute("role", "group");
+      btnContainer.setAttribute("aria-label", "Message actions");
+      msg.classList.add("ultreme-has-actions");
+      msg.style.position = "relative";
+      msg.appendChild(btnContainer);
+      for (const action of messageActions) {
+        if (action.available && !action.available(context)) continue;
+        appendMessageButton(btnContainer, { ...action,
+          visible: action.visible(), onClick: () => action.run(context) });
       }
 
-      let btnContainer = msg.querySelector(".message-button-container");
-      if (!btnContainer) {
-        btnContainer = document.createElement("div");
-        btnContainer.className = "message-button-container";
-        btnContainer.setAttribute("role", "group");
-        btnContainer.setAttribute("aria-label", "Message actions");
-        msg.classList.add("ultreme-has-actions");
-        msg.style.position = "relative";
-        msg.appendChild(btnContainer);
-      }
-
-      if (!msg.querySelector(".delete-button") && isOwnMessage(msg)) {
-        appendMessageButton(btnContainer, {
-          className: "delete-button",
-          icon: "trash-alt",
-          text: "Delete",
-          title: "Delete this message",
-          visible: settings.enableDelete && settings.showDeleteButton,
-          onClick: () => deleteMessage(msg),
-        });
-      }
-
-      if (!msg.querySelector(".quote-button")) {
-        appendMessageButton(btnContainer, {
-          className: "quote-button",
-          icon: "quote-right",
-          text: "Quote",
-          title: "Quote this message",
-          visible: settings.showQuoteButton,
-          onClick: () => {
-            clearSelectedMessage();
-            msg.classList.add("selected-quote");
-            const quoteData =
-              selectedQuoteData &&
-              selectedQuoteData.id === id &&
-              selectedQuoteData.msg
-                ? { ...selectedQuoteData }
-                : messageData;
-            applyQuote(quoteData);
-          },
-        });
-      }
-
-      if (!msg.querySelector(".goto-button")) {
-        const a = textEl.querySelector('a[href^="#"]');
-        const { messageId: targetId } = parseQuoteHref(a?.getAttribute("href"));
-        if (targetId) {
-          appendMessageButton(btnContainer, {
-            className: "goto-button",
-            icon: "arrow-up",
-            text: "Go to quoted",
-            title: "Scroll to quoted message",
-            visible: settings.showGotoButton,
-            onClick: () => scrollToMessageId(targetId),
-          });
-        }
-      }
-
-      enhanceScriptQuote(msg, textEl);
+      enhanceScriptQuote(msg, textEl, context.quote);
     };
 
     injectCSS();
@@ -2962,19 +2625,12 @@
     for (const msg of [...getMessagesContainer().children]) {
       if (msg.classList.contains("message")) processMessage(msg);
     }
-    addForumButton();
-    addJumpToBottomButton();
-
-    applySelectedQuote = () => {
-      if (selectedQuoteData) applyQuote(selectedQuoteData);
-    };
+    syncSidebarActions();
 
     const form = document.querySelector("form.input");
-    const input = document.querySelector("textarea.input__text");
+    const input = getChatInput();
 
-    if (form && input && !form.__quoteIntercepted) {
-      form.__quoteIntercepted = true;
-
+    if (form && input) {
       form.addEventListener(
         "submit",
         () => {
