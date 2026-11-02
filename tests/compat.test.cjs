@@ -18,14 +18,21 @@ after(async () => { await browser?.close(); });
 // Offline contract fixture derived from the supplied mami-master.zip:
 // chatform/{form,input,markup}.jsx, ui/messages.jsx and index.js's Menus compat API.
 // No account, server connection, upload, or update request is made.
-async function fixture({ connected = true, settings = {}, backlog = [], remoteVersion = null, touch = false } = {}) {
+async function fixture({ connected = true, settings = {}, backlog = [], remoteVersion = null, touch = false, userscript = true } = {}) {
   const page = await browser.newPage({ hasTouch: touch });
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/*", route => route.request().url() === "https://chat.flashii.net/fixture"
     ? route.fulfill({ contentType: "text/html", body: `<!doctype html>
-      <style id="chat-style">.hidden { display: none; }</style>
+      <style id="chat-style">
+        .hidden { display: none; }
+        body { background: Canvas; color: CanvasText; }
+        .theme-dark { color-scheme: dark; }
+        .theme-light { color-scheme: light; }
+        .message { display: flex; }
+        .message__container, .message__meta { display: inline-flex; }
+      </style>
       <div class="sidebar__selector"><button class="sidebar__selector-mode" title="Scroll mode"></button></div>
       <div id="umi-messages" class="messages"><div id="umi-messages-anchor"></div></div>
       <form class="input"><div class="input__menus"><div class="input__menu">
@@ -64,7 +71,7 @@ async function fixture({ connected = true, settings = {}, backlog = [], remoteVe
       window.Umi.Server.sendMessage(input.value);
       input.value = "";
     };
-    document.querySelector(".markup__button").onclick = () => {
+    document.querySelector(".input__menus .markup__button").onclick = () => {
       const input = document.querySelector("textarea");
       const start = input.selectionStart, end = input.selectionEnd;
       input.value = input.value.slice(0, start) + "[quote]" + input.value.slice(start, end) + "[/quote]" + input.value.slice(end);
@@ -86,7 +93,7 @@ async function fixture({ connected = true, settings = {}, backlog = [], remoteVe
       const text = document.createElement("div");
       text.className = tiny ? "message-tiny-text" : "message__text";
       if (html) text.innerHTML = html;
-      else text.textContent = body;
+      else text.innerText = body;
       if (!html && window.Umi.Parsing) window.Umi.Parsing.Parse(text);
       msg.querySelector(tiny ? ".message__meta" : ".message__container").append(text);
       document.getElementById(before ? `message-${before}` : "umi-messages-anchor").before(msg);
@@ -120,18 +127,32 @@ async function fixture({ connected = true, settings = {}, backlog = [], remoteVe
     for (const file of ["styles/root.css", "styles/message.css", "styles/input.css", "sidebar/pan-settings.css", "themes/dark.css", "themes/light.css", "themes/blue.css", "themes/purple.css", "themes/archaic.css"])
       await page.addStyleTag({ content: fs.readFileSync(path.join(src, file), "utf8") });
     const fonts = fs.readFileSync(path.join(src, "fonts.css"), "utf8");
-    // Font feature rules are tested offline; package font imports are not fetched.
-    await page.addStyleTag({ content: fonts.slice(fonts.indexOf(".font-theme,")) });
+    // Load the client's actual font metrics offline, including its local emoji face.
+    for (const file of ["@fortawesome/fontawesome-free/css/all.css", "inter-ui/inter-variable.css"]) {
+      const cssPath = require.resolve(file);
+      const css = fs.readFileSync(cssPath, "utf8").replace(/url\((['"]?)([^)'"\s]+)\1\)/g, (_, quote, url) => {
+        const fontPath = url.split(/[?#]/)[0];
+        if (!fontPath.endsWith(".woff2")) return 'url("")';
+        return `url("data:font/woff2;base64,${fs.readFileSync(path.resolve(path.dirname(cssPath), fontPath)).toString("base64")}")`;
+      });
+      await page.addStyleTag({ content: css });
+    }
+    await page.addStyleTag({ content: fonts.slice(fonts.indexOf("@font-face")) });
     await page.evaluate(() => document.body.classList.add("theme-dark", "font-theme"));
   }
   for (const msg of backlog) await page.evaluate(msg => window.addMessage(msg), msg);
-  await page.addScriptTag({ content: script });
+  if (userscript) await page.addScriptTag({ content: script });
+  await page.evaluate(() => document.fonts.ready);
   return { page, errors, close: async () => { await page.close(); assert.deepEqual(errors, []); } };
 }
 
 test("metadata and userscript headers match", () => {
   const meta = fs.readFileSync(path.join(root, "ultreme-script.meta.js"), "utf8").replace(/\r\n/g, "\n").trim();
   assert.equal(script.slice(0, script.indexOf("// ==/UserScript==") + 18).trim(), meta);
+});
+
+test("userscript has no fixed colour literals", () => {
+  assert.doesNotMatch(script, /#[\da-f]{3,8}\b|(?:rgba?|hsla?)\(\s*[\d.]+/i);
 });
 
 test("initializes before or after connect, and repeated connects install only one keyboard handler", async () => {
@@ -207,7 +228,7 @@ test("rich and plain partial quoting preserve the selected text and the draft", 
         range.setStart(text, 6); range.setEnd(text, 14);
         window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
         document.dispatchEvent(new MouseEvent("mouseup"));
-        document.querySelector(".markup__button").click();
+        document.querySelector(".input__menus .markup__button").click();
       });
       if (rich) {
         assert.ok((await f.page.locator("#quote-preview").innerText()).includes("selected"));
@@ -283,9 +304,13 @@ test("quote blocks, jumping, media, compact mode and light themes work with the 
     }
     await f.page.evaluate(() => document.body.classList.add("compact"));
     assert.equal(await f.page.locator("#message-20 .message__container").evaluate(el => getComputedStyle(el).display), "grid");
-    assert.equal(await f.page.locator(".message__quote-avatar").evaluate(el => getComputedStyle(el).display), "none");
+    assert.equal(await f.page.locator(".message__quote").isVisible(), false);
+    assert.equal(await f.page.locator(".message__quote-reference .fa-reply").count(), 1);
+    assert.equal(await f.page.locator(".message__quote-reference").isVisible(), true);
     await f.page.locator(".js-ultreme-enableQuoteBlocks").uncheck();
     assert.equal(await f.page.locator(".message__quote").evaluate(el => getComputedStyle(el).display), "none");
+    assert.equal(await f.page.locator(".message__quote-reference").isVisible(), false);
+    assert.equal(await f.page.locator("#message-20 q").isVisible(), true);
     await f.page.locator(".js-ultreme-enableQuoteBlocks").check();
     for (const scheme of ["dark", "light"]) {
       await f.page.evaluate(scheme => {
@@ -293,8 +318,14 @@ test("quote blocks, jumping, media, compact mode and light themes work with the 
         document.body.classList.remove("theme-dark", "theme-light");
         document.body.classList.add(`theme-${scheme}`);
       }, scheme);
-      const background = await f.page.locator(".message__quote").evaluate(el => getComputedStyle(el).backgroundColor);
-      assert.equal(background, scheme === "light" ? "rgb(238, 238, 238)" : "rgb(17, 17, 17)");
+      const background = await f.page.locator(".message__quote").evaluate(el => {
+        const ctx = document.createElement("canvas").getContext("2d");
+        ctx.fillStyle = getComputedStyle(el).backgroundColor;
+        ctx.fillRect(0, 0, 1, 1);
+        return [...ctx.getImageData(0, 0, 1, 1).data];
+      });
+      assert.deepEqual(background.slice(0, 3), scheme === "light" ? [0, 0, 0] : [255, 255, 255]);
+      assert.ok(background[3] > 0 && background[3] < 64, "Quote tint should leave the message background visible");
     }
   } finally { await f.close(); }
 });
@@ -305,6 +336,19 @@ test("outgoing quotes round-trip through the supplied Mami BBCode parser", { ski
     await f.page.locator(".quote-button").click();
     await f.page.locator("textarea").fill("reply");
     await f.page.locator('button[type="submit"]').click();
+    const plain = await fixture({ userscript: false });
+    try {
+      const outgoing = await f.page.evaluate(() => window.sent[0]);
+      await plain.page.evaluate(body => window.addMessage({ id: "20", body }), outgoing);
+      for (const compact of [false, true]) {
+        await plain.page.evaluate(compact => document.body.classList.toggle("compact", compact), compact);
+        assert.equal(await plain.page.locator("#message-20 q").isVisible(), true);
+        assert.ok((await plain.page.locator("#message-20 .message__text").innerText()).includes("Hello"));
+        assert.ok((await plain.page.locator("#message-20 .message__text").innerText()).includes("reply"));
+        assert.ok((await plain.page.locator("#message-20 i").innerText()).includes("Lester"));
+      }
+      assert.equal(await plain.page.locator(".message__quote-reference, .message__quote, #ultreme-style").count(), 0);
+    } finally { await plain.close(); }
     await f.page.evaluate(() => window.addMessage({ id: "20", author: "2", body: window.sent[0] }));
     assert.equal(await f.page.locator("#message-20 .message__quote").count(), 1);
     assert.ok((await f.page.locator("#message-20 .message__quote-text").innerText()).includes("Hello"));
@@ -479,6 +523,7 @@ test("message button content, visibility and appearance update existing and new 
   const f = await fixture({ backlog: [{ id: "10" }] });
   const pref = key => f.page.locator(`.js-ultreme-${key}`);
   try {
+    assert.equal(await pref("messageButtonAppearance").inputValue(), "subtle");
     await f.page.clock.install();
     await f.page.addStyleTag({ content: ".message-button-container button { transition: none !important; }" });
     await f.page.evaluate(() => window.addMessage({ id: "20", html: '<i>Lester @ 1m ago —</i><a href="#10:1">\u200c</a><q>quoted</q>' }));
@@ -510,8 +555,14 @@ test("message button content, visibility and appearance update existing and new 
     assert.equal(await f.page.locator("#message-20 .quote-button").evaluate(el => getComputedStyle(el).opacity), "1");
     await pref("messageButtonAppearance").selectOption("outlined");
     assert.notEqual(await f.page.locator("#message-20 .quote-button").evaluate(el => getComputedStyle(el).borderTopColor), "rgba(0, 0, 0, 0)");
-    await pref("messageButtonAppearance").selectOption("filled");
-    assert.equal(await f.page.locator("#message-20 .quote-button").evaluate(el => getComputedStyle(el).borderTopWidth), "0px");
+    await pref("messageButtonContent").selectOption("icons");
+    await pref("messageButtonAppearance").selectOption("plain");
+    await f.page.locator("#message-20 .quote-button").hover();
+    assert.equal(await f.page.locator("#message-20 .quote-button").evaluate(el => getComputedStyle(el).backgroundColor), "rgba(0, 0, 0, 0)");
+    await pref("messageButtonContent").selectOption("both");
+    assert.equal(await pref("messageButtonAppearance").inputValue(), "subtle");
+    assert.equal(await pref("messageButtonAppearance").locator('option[value="plain"]').evaluate(el => el.disabled), true);
+    assert.equal(await f.page.evaluate(() => localStorage.getItem("ultreme_messageButtonAppearance")), "subtle");
     await pref("showQuoteButton").uncheck();
     assert.equal(await f.page.locator("#message-20 .quote-button").isVisible(), false);
     await f.page.evaluate(() => window.addMessage({ id: "30" }));
@@ -524,7 +575,7 @@ test("message button content, visibility and appearance update existing and new 
         content: document.body.dataset.ultremeButtonContent,
         visibility: document.body.dataset.ultremeButtonVisibility,
         appearance: document.body.dataset.ultremeButtonAppearance,
-      })), { content: "both", visibility: "always", appearance: "filled" });
+      })), { content: "both", visibility: "always", appearance: "subtle" });
       assert.equal(await reloaded.page.locator(".quote-button .message-button-label").isVisible(), true);
     } finally { await reloaded.close(); }
   } finally { await f.close(); }
@@ -574,7 +625,7 @@ test("quote blocks fit their content and remain inside narrow message rows", { s
       await f.page.evaluate(compact => document.body.classList.toggle("compact", compact), compact);
       for (const id of ["10", "20"]) {
         const widths = await f.page.locator(`#message-${id}`).evaluate(msg => ({
-          quote: msg.querySelector(".message__quote").getBoundingClientRect().width,
+          quote: msg.querySelector(document.body.classList.contains("compact") ? ".message__quote-reference" : ".message__quote").getBoundingClientRect().width,
           row: msg.querySelector(".message__container").getBoundingClientRect().width,
         }));
         assert.ok(widths.quote < widths.row / 2, `Short quote should fit its content: ${JSON.stringify(widths)}`);
@@ -587,7 +638,7 @@ test("quote blocks fit their content and remain inside narrow message rows", { s
     for (const compact of [false, true]) {
       await f.page.evaluate(compact => document.body.classList.toggle("compact", compact), compact);
       const bounds = await f.page.locator("#message-30").evaluate(msg => {
-        const quote = msg.querySelector(".message__quote");
+        const quote = msg.querySelector(document.body.classList.contains("compact") ? ".message__quote-reference" : ".message__quote");
         const rect = quote.getBoundingClientRect();
         const parent = msg.querySelector(".message__container").getBoundingClientRect();
         return { left: rect.left - parent.left, right: parent.right - rect.right, overflow: quote.scrollWidth - quote.clientWidth };
@@ -595,6 +646,100 @@ test("quote blocks fit their content and remain inside narrow message rows", { s
       assert.ok(bounds.left >= -1 && bounds.right >= -1, JSON.stringify(bounds));
       assert.ok(bounds.overflow <= 1, JSON.stringify(bounds));
     }
+  } finally { await f.close(); }
+});
+
+test("compact references stay inline, truncate only the quote, and support keyboard navigation", { skip: !process.env.MAMI_CLIENT_PATH }, async () => {
+  const f = await fixture({ backlog: [{ id: "10", body: "Hello" }] });
+  try {
+    const snippet = "A long quoted sentence ".repeat(20);
+    await f.page.evaluate(snippet => {
+      window.addMessage({ id: "20", html: `<i>Lester @ 1m ago —</i><a href="#10:1">\u200c</a><q>${snippet}</q><br>again` });
+      window.addMessage({ id: "30", html: '<i>Lester @ 1m ago —</i><a href="#10:1">\u200c</a><q>Hello</q><br>' + "A long reply must remain readable. ".repeat(20) });
+      document.getElementById("message-20").classList.add("message--first");
+      document.body.classList.add("compact");
+    }, snippet);
+    const reference = f.page.locator("#message-20 .message__quote-reference");
+    assert.ok((await reference.getAttribute("title")).includes(snippet.trim()));
+    assert.ok((await reference.getAttribute("aria-label")).includes("Go to original message"));
+    const inline = await f.page.locator("#message-20").evaluate(msg => {
+      const bounds = selector => msg.querySelector(selector).getBoundingClientRect();
+      const quote = bounds(".message__quote-reference");
+      const text = bounds(".message__text");
+      return {
+        aligned: Math.abs(quote.top - text.top) < 6,
+        separated: quote.right <= text.left,
+        capped: bounds(".message__quote-reference-text").width <= innerWidth * 0.25 + 1,
+        clipped: msg.querySelector(".message__quote-reference-text").scrollWidth > msg.querySelector(".message__quote-reference-text").clientWidth,
+        height: msg.getBoundingClientRect().height,
+        plainHeight: document.getElementById("message-10").getBoundingClientRect().height,
+      };
+    });
+    assert.ok(inline.aligned && inline.separated && inline.capped && inline.clipped, JSON.stringify(inline));
+    assert.ok(Math.abs(inline.height - inline.plainHeight) <= 1, JSON.stringify(inline));
+    await reference.focus();
+    await f.page.keyboard.press("Enter");
+    assert.equal(await f.page.evaluate(() => location.hash), "");
+    assert.ok(await f.page.locator("#message-10").evaluate(el => el.classList.contains("highlight-temp")));
+    await f.page.setViewportSize({ width: 360, height: 800 });
+    const narrow = await f.page.locator("#message-20").evaluate(msg => ({
+      quoteBottom: msg.querySelector(".message__quote-reference").getBoundingClientRect().bottom,
+      replyTop: msg.querySelector(".message__text").getBoundingClientRect().top,
+      overflow: msg.scrollWidth - msg.clientWidth,
+    }));
+    assert.ok(narrow.quoteBottom <= narrow.replyTop && narrow.overflow <= 1, JSON.stringify(narrow));
+    const reply = await f.page.locator("#message-30 .message__text").evaluate(text => ({
+      height: text.clientHeight,
+      scrollHeight: text.scrollHeight,
+      lineHeight: parseFloat(getComputedStyle(text).lineHeight),
+    }));
+    assert.ok(reply.height > reply.lineHeight * 2 && reply.scrollHeight <= reply.height + 1, JSON.stringify(reply));
+    await f.page.evaluate(() => document.body.classList.remove("compact"));
+    assert.equal(await reference.isVisible(), false);
+    assert.equal(await f.page.locator("#message-20 .message__quote").isVisible(), true);
+  } finally { await f.close(); }
+});
+
+test("compact references preserve authors and keep multiline quotes out of reply layout", { skip: !process.env.MAMI_CLIENT_PATH }, async () => {
+  const name = "AQuotedAuthorWhoseFullNameMustStayVisible";
+  const f = await fixture({ backlog: [{ id: "10", body: "Plain message" }, { id: "40", author: "2", name, body: "Original" }] });
+  try {
+    await f.page.evaluate(name => {
+      const quoted = (id, quote, reply) => window.addMessage({ id, body:
+        `[i][b]${name}[/b] @ 1m ago —[/i][url=#40:2]\u200c[/url][quote]${quote}[/quote]\n[color=var(--theme-colour-message-time-colour)]└─ [/color]${reply}` });
+      quoted("50", "Weighted blankets have to be a psyop", "A short reply");
+      quoted("60", "Wordle 1,962 4/6*\n🟩⬜🟩⬜⬜\n🟩🟩🟩⬜⬜", "A short reply");
+      quoted("70", "first line\n[color=currentColor]└─ [/color]quoted branch\nlast line", "A short reply");
+      quoted("80", "first quoted line\nsecond quoted line", "first reply line\nsecond reply line");
+      document.getElementById("message-50").classList.add("message--first");
+      document.body.classList.add("compact");
+    }, name);
+    await f.page.evaluate(() => document.fonts.ready);
+    assert.ok(await f.page.evaluate(() => document.fonts.check('900 12px "Font Awesome 5 Free"') && document.fonts.check('13px InterVariable')));
+    const heights = await f.page.evaluate(() => ["10", "50", "60", "70"].map(id => document.getElementById(`message-${id}`).getBoundingClientRect().height));
+    assert.ok(heights.every(height => Math.abs(height - heights[0]) <= 1), JSON.stringify(heights));
+    for (const id of ["50", "60", "70"]) {
+      assert.equal((await f.page.locator(`#message-${id} .message__text`).innerText()).trim(), "A short reply");
+      assert.equal(await f.page.locator(`#message-${id} .message__text > br:not(.ultreme-inline-quote)`).count(), 0);
+    }
+    assert.equal((await f.page.locator("#message-80 .message__text").innerText()).trim(), "first reply line\nsecond reply line");
+    assert.equal(await f.page.locator("#message-80 .message__text > br:not(.ultreme-inline-quote)").count(), 1);
+    for (const width of [1280, 360]) {
+      await f.page.setViewportSize({ width, height: 800 });
+      const author = f.page.locator("#message-60 .message__quote-reference-author");
+      assert.equal(await author.innerText(), `${name}:`);
+      const bounds = await author.evaluate(el => ({
+        clipped: el.scrollWidth > el.clientWidth + 1,
+        right: el.getBoundingClientRect().right,
+        parentRight: el.parentElement.getBoundingClientRect().right,
+      }));
+      assert.ok(!bounds.clipped && bounds.right <= bounds.parentRight + 1, `${width}: ${JSON.stringify(bounds)}`);
+    }
+    await f.page.setViewportSize({ width: 1280, height: 800 });
+    await f.page.locator(".js-ultreme-enableQuoteBlocks").uncheck();
+    assert.equal(await f.page.locator("#message-60 q").isVisible(), true);
+    assert.ok((await f.page.locator("#message-60 q").innerText()).includes("Wordle"));
+    assert.ok((await f.page.locator("#message-60 .message__text").innerText()).includes("A short reply"));
   } finally { await f.close(); }
 });
 
@@ -682,29 +827,117 @@ test("removed size settings and old saved values leave native sizing and avatar 
   } finally { await f.close(); }
 });
 
-test("outlined and borderless filled actions follow every native theme when switched live", { skip: !process.env.MAMI_CLIENT_PATH }, async () => {
+test("subtle and outline actions share native BBCode fills when themes change", { skip: !process.env.MAMI_CLIENT_PATH }, async () => {
   const f = await fixture({ backlog: [{ id: "10" }], settings: { messageButtonVisibility: "always" } });
   const appearance = f.page.locator(".js-ultreme-messageButtonAppearance");
   const button = f.page.locator("#message-10 .quote-button");
+  const native = f.page.locator(".input__menus .markup__button");
+  const colours = locator => locator.evaluate(el => {
+    const style = getComputedStyle(el);
+    return { background: style.backgroundColor, foreground: style.color };
+  });
   try {
+    await f.page.addStyleTag({ content: ".markup__button { transition: none !important; }" });
     for (const theme of ["dark", "light", "blue", "purple", "archaic"]) {
       await f.page.evaluate(theme => {
         document.body.classList.remove("theme-dark", "theme-light", "theme-blue", "theme-purple", "theme-archaic");
         document.body.classList.add(`theme-${theme}`);
       }, theme);
-      const accent = await f.page.evaluate(() => getComputedStyle(document.body).accentColor);
-      await appearance.selectOption("outlined");
-      assert.equal(await button.evaluate(el => getComputedStyle(el).borderTopColor), accent, theme);
-      await appearance.selectOption("filled");
-      await button.focus();
-      const filled = await button.evaluate(el => {
-        const style = getComputedStyle(el);
-        return { background: style.backgroundColor, border: style.borderTopWidth, outline: style.outlineStyle };
-      });
-      assert.deepEqual(filled, { background: accent, border: "0px", outline: "none" }, theme);
-      await button.hover();
-      assert.equal(await button.evaluate(el => getComputedStyle(el).backgroundColor), accent, theme);
+      for (const style of ["subtle", "outlined"]) {
+        await appearance.selectOption(style);
+        await f.page.mouse.move(0, 0);
+        const resting = await colours(native);
+        assert.deepEqual(await colours(button), resting, `${theme} ${style} at rest`);
+        await native.hover();
+        const hovered = await colours(native);
+        await button.hover();
+        assert.deepEqual(await colours(button), hovered, `${theme} ${style} on hover`);
+        await native.hover();
+        await f.page.mouse.down();
+        const pressed = await colours(native);
+        await f.page.mouse.up();
+        await button.hover();
+        await f.page.mouse.down();
+        assert.deepEqual(await colours(button), pressed, `${theme} ${style} when pressed`);
+        await f.page.mouse.up();
+        const border = await button.evaluate(el => getComputedStyle(el).borderTopColor);
+        assert.equal(border === "rgba(0, 0, 0, 0)", style === "subtle", `${theme} ${style} border`);
+      }
     }
+  } finally { await f.close(); }
+});
+
+test("open userscript surfaces follow native and custom themes live", { skip: !process.env.MAMI_CLIENT_PATH }, async () => {
+  const f = await fixture({ remoteVersion: "5.8.0", backlog: [{ id: "10", body: "[code]example[/code]" }] });
+  try {
+    await f.page.locator("#message-10 .quote-button").click();
+    await f.page.evaluate(() => { window.startUpload("themed"); window.progress("themed", 25); });
+    await f.page.locator(".js-ultreme-uploadProgressDisplayPerFile").check();
+    await f.page.evaluate(() => {
+      const link = document.createElement("a");
+      link.className = "ultreme-preview-media";
+      link.href = "https://example.com/theme.png";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    });
+    await f.page.addStyleTag({ content: `
+      .theme-custom { color-scheme: dark; background: rgb(25, 35, 20); color: rgb(230, 240, 220); accent-color: rgb(135, 165, 85); }
+      .theme-custom .messages { background: rgb(40, 55, 30); }
+      .theme-custom .markup__button { background: rgb(65, 80, 50); color: rgb(245, 250, 230); }
+    ` });
+    const seen = new Set();
+    for (const theme of ["dark", "light", "blue", "purple", "archaic", "custom"]) {
+      await f.page.evaluate(theme => {
+        for (const name of [...document.body.classList])
+          if (name.startsWith("theme-")) document.body.classList.remove(name);
+        document.body.classList.add(`theme-${theme}`);
+      }, theme);
+      const combined = await f.page.evaluate(() => {
+        document.querySelector(".js-ultreme-uploadProgressDisplayCombined").click();
+        return {
+          background: getComputedStyle(document.getElementById("upload-progress-bar")).backgroundColor,
+          foreground: getComputedStyle(document.getElementById("upload-progress-text")).color,
+        };
+      });
+      await f.page.evaluate(() => document.querySelector(".js-ultreme-uploadProgressDisplayPerFile").click());
+      const colours = await f.page.evaluate(() => {
+        const style = selector => getComputedStyle(document.querySelector(selector));
+        const body = getComputedStyle(document.body);
+        const native = style(".input__menus .markup__button");
+        const surface = style(".messages").backgroundColor;
+        const foregrounds = ["#quote-preview", "#ultreme-update-prompt", ".upload-progress-item__name", ".umi-media-modal-title"];
+        const buttons = ["#quote-preview code", ".ultreme-update-actions a", ".umi-media-modal-close"];
+        return {
+          surface,
+          previews: ["#quote-preview", "#ultreme-update-prompt"].map(selector => style(selector).backgroundColor),
+          text: body.color,
+          foregrounds: foregrounds.map(selector => style(selector).color),
+          button: native.backgroundColor,
+          buttons: buttons.map(selector => style(selector).backgroundColor),
+          buttonText: native.color,
+          controlText: [".ultreme-update-actions a", ".umi-media-modal-close"].map(selector => style(selector).color),
+          scheme: body.colorScheme,
+          modalScheme: style(".umi-media-modal-toolbar").colorScheme,
+          popup: style(".upload-progress-item").backgroundColor,
+          gradient: style(".upload-progress-item__fill").backgroundImage,
+          backdrop: style(".umi-media-modal-backdrop").backgroundColor,
+          shadow: style(".upload-progress-item").boxShadow,
+        };
+      });
+      assert.ok(colours.previews.every(color => color === colours.surface), `${theme} preview surfaces`);
+      assert.ok(colours.foregrounds.every(color => color === colours.text), `${theme} text`);
+      assert.ok(colours.buttons.every(color => color === colours.button), `${theme} buttons`);
+      assert.ok(colours.controlText.every(color => color === colours.buttonText), `${theme} button text`);
+      assert.deepEqual(combined, { background: colours.button, foreground: colours.buttonText }, `${theme} combined progress`);
+      assert.equal(colours.modalScheme, colours.scheme, `${theme} media colour scheme`);
+      const palette = JSON.stringify([colours.popup, colours.gradient, colours.backdrop, colours.shadow]);
+      assert.ok(!seen.has(palette), `${theme} uploads and media must adopt a different palette`);
+      seen.add(palette);
+    }
+    // Inline palette changes also update open surfaces without a theme-class change.
+    await f.page.evaluate(() => document.body.style.color = "rgb(210, 230, 190)");
+    assert.equal(await f.page.locator("#quote-preview").evaluate(el => getComputedStyle(el).color), "rgb(210, 230, 190)");
   } finally { await f.close(); }
 });
 

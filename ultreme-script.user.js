@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      5.7.0
+// @version      5.8
 // @description  Better quotes & delete button, quote blocks, upload progress bar, and Go to Forum button with settings.
 // @author       lester
 // @match        *://chat.flashii.net/*
@@ -67,12 +67,13 @@
           ],
         },
         {
-          key: "messageButtonAppearance", label: "Message button appearance", default: "subtle",
+          key: "messageButtonAppearance", label: "Message button style", default: "subtle",
           control: "select", options: [
+            { value: "plain", label: "Plain", enabled: values => values.messageButtonContent === "icons" },
             { value: "subtle", label: "Subtle" },
-            { value: "outlined", label: "Outlined" },
-            { value: "filled", label: "Filled" },
+            { value: "outlined", label: "Outline" },
           ],
+          hint: "Plain is available with icons only.",
         },
         {
           key: "enableDelete", label: "Enable deletion", default: true,
@@ -155,26 +156,46 @@
 
   const applyMessageButtonSettings = () => {
     dismissTouchActions();
+    if (settings.messageButtonAppearance === "plain" && settings.messageButtonContent !== "icons")
+      saveSetting("messageButtonAppearance", "subtle");
     document.body.dataset.ultremeButtonContent = settings.messageButtonContent;
     document.body.dataset.ultremeButtonVisibility = settings.messageButtonVisibility;
     document.body.dataset.ultremeButtonAppearance = settings.messageButtonAppearance;
   };
 
-  const syncActionThemeColors = () => {
-    const accent = W.getComputedStyle(document.body).accentColor;
-    const color = accent && accent !== "auto" ? accent : "Highlight";
-    const channels = color.startsWith("rgb") ? color.match(/[\d.]+/g)?.slice(0, 3) : null;
-    let foreground = "HighlightText";
-    if (channels?.length === 3) {
-      const linear = channels.map(value => {
-        const channel = Number(value) / 255;
-        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-      });
-      const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
-      foreground = luminance > 0.179 ? "#000" : "#fff";
-    }
-    document.body.style.setProperty("--ultreme-action-accent", color);
-    document.body.style.setProperty("--ultreme-action-foreground", foreground);
+  const syncThemeColors = () => {
+    const palette = document.getElementById(cssID)?.sheet?.cssRules[0]?.style;
+    if (!palette) return;
+    const bodyStyle = W.getComputedStyle(document.body);
+    const background = (element) => {
+      if (!element) return null;
+      const color = W.getComputedStyle(element).backgroundColor;
+      return color === "transparent" || /^rgba\(.+,\s*0\)$/.test(color) || /\/\s*0\)$/.test(color)
+        ? null : color;
+    };
+    const surface = background(getMessagesContainer()) || background(getChatInput()) || background(document.body) || "Canvas";
+    const dark = bodyStyle.colorScheme === "dark";
+    // Sample an unhovered BBCode button without copying its behaviour.
+    const probe = document.createElement("button");
+    probe.type = "button";
+    probe.className = "markup__button";
+    probe.hidden = true;
+    (document.querySelector(".input__menus .input__menu") || document.body).appendChild(probe);
+    const buttonStyle = W.getComputedStyle(probe);
+    const buttonBackground = background(probe);
+    const buttonText = buttonStyle.color;
+    probe.remove();
+    const values = {
+      "text": bodyStyle.color,
+      "surface": surface,
+      "button": buttonBackground || "color-mix(in srgb, var(--ultreme-surface) 85%, var(--ultreme-text))",
+      "button-text": buttonText,
+      "accent": bodyStyle.accentColor !== "auto" ? bodyStyle.accentColor : "Highlight",
+      "bright": dark ? bodyStyle.color : surface,
+      "shade": dark ? background(document.body) || surface : bodyStyle.color,
+    };
+    for (const [key, value] of Object.entries(values))
+      palette.setProperty(`--ultreme-native-${key}`, value);
   };
 
   let selectedText = "";
@@ -261,7 +282,7 @@
             .slice(0, 3)
             .map((x) => (+x).toString(16).padStart(2, "0"))
             .join("")
-      : "#000";
+      : null;
   };
 
   const buildQuoteDataFromMessageElement = (msg, overrideText = null) => {
@@ -325,14 +346,14 @@
     const label = document.createElement("span");
     label.textContent = "Uploading File...";
     label.style.cssText = `
-      color: var(--theme-colour-main-colour, CanvasText);
+      color: var(--ultreme-text);
       font-size: 13px;
     `;
 
     const sizeLabel = document.createElement("span");
     sizeLabel.id = "upload-progress-size";
     sizeLabel.style.cssText = `
-      color: var(--theme-colour-main-colour, CanvasText);
+      color: var(--ultreme-text);
       font-size: 12px;
       min-width: 120px;
       white-space: nowrap;
@@ -345,16 +366,16 @@
       position: relative;
       width: ${DEFAULT_UPLOAD_PROGRESS_BAR_WIDTH}px;
       height: 20px;
-      background-color: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+      background-color: var(--ultreme-button);
       border-radius: 2px;
-      box-shadow: 0 0 0 1px var(--theme-colour-input-menu-box-shadow, light-dark(#ccc, #444));
+      box-shadow: 0 0 0 1px var(--ultreme-border);
       overflow: hidden;
     `;
 
     const inner = document.createElement("div");
     inner.id = "upload-progress-inner";
     inner.style.cssText = `
-      background-color: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
+      background-color: var(--ultreme-button-hover);
       position: absolute;
       inset: 0 auto 0 0;
       height: 100%;
@@ -370,7 +391,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--theme-colour-main-colour, CanvasText);
+      color: var(--ultreme-button-text);
       font-size: 12px;
       font-weight: bold;
       font-family: inherit;
@@ -428,7 +449,7 @@
   }
 
   function renderUploadPopupItem(id, { label, percent, sizeText, done = false }) {
-    const item = ensureUploadPopupItem(id, label);
+    const item = ensureUploadPopupItem(id);
     item.querySelector(".upload-progress-item__name").textContent = label;
     item.querySelector(".upload-progress-item__meta").textContent = `${percent}%`;
     item.querySelector(".upload-progress-item__fill").style.width = `${percent}%`;
@@ -461,7 +482,7 @@
     return `Upload ${fallbackId}`;
   }
 
-  function ensureUploadPopupItem(id, label) {
+  function ensureUploadPopupItem(id) {
     createUploadPopup();
 
     const popup = getUploadPopupRoot();
@@ -484,7 +505,6 @@
       <div class="upload-progress-item__size"></div>
     `;
 
-    item.querySelector(".upload-progress-item__name").textContent = label;
     popup.appendChild(item);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1258,6 +1278,21 @@
       const style = document.createElement("style");
       style.id = cssID;
       style.textContent = `
+        body {
+          --ultreme-text: var(--theme-colour-main-colour, var(--ultreme-native-text, CanvasText));
+          --ultreme-surface: var(--theme-colour-input-background, var(--ultreme-native-surface, Canvas));
+          --ultreme-button: var(--theme-colour-input-menu-button, var(--ultreme-native-button, ButtonFace));
+          --ultreme-button-text: var(--theme-colour-main-colour, var(--ultreme-native-button-text, ButtonText));
+          --ultreme-button-hover: var(--theme-colour-input-menu-button-hover, color-mix(in srgb, var(--ultreme-button) 85%, var(--ultreme-button-text)));
+          --ultreme-button-active: var(--theme-colour-input-menu-button-active, color-mix(in srgb, var(--ultreme-button) 75%, var(--ultreme-button-text)));
+          --ultreme-accent: var(--theme-colour-main-accent, var(--ultreme-native-accent, Highlight));
+          --ultreme-border: var(--theme-colour-settings-input-border, color-mix(in srgb, var(--ultreme-surface) 75%, var(--ultreme-text)));
+          --ultreme-muted: var(--theme-colour-message-time-colour, color-mix(in srgb, var(--ultreme-text) 65%, var(--ultreme-surface)));
+          --ultreme-bright: var(--ultreme-native-bright, Canvas);
+          --ultreme-shade: var(--ultreme-native-shade, CanvasText);
+          --ultreme-shadow: color-mix(in srgb, var(--ultreme-shade) 45%, transparent);
+          --ultreme-raised: color-mix(in srgb, var(--ultreme-surface) 92%, var(--ultreme-text));
+        }
         #umi-menus-ultreme,
         #quote-preview,
         #ultreme-update-prompt,
@@ -1267,6 +1302,7 @@
         .message-button-container,
         .message__quote {
           font-family: ${UI_FONT_FAMILY};
+          color: var(--ultreme-text);
         }
         #umi-menus-ultreme input,
         #umi-menus-ultreme select,
@@ -1278,7 +1314,7 @@
         }
         /* Keep the quote wire format readable with Mami's new theme styles. */
         .message__text {
-          --theme-colour-message-time-colour: GrayText;
+          --theme-colour-message-time-colour: var(--ultreme-muted);
         }
         .message.ultreme-has-actions {
           flex-wrap: wrap;
@@ -1311,9 +1347,18 @@
           line-height: 1.2;
           gap: 0.35em;
           cursor: pointer;
-          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
-          color: var(--theme-colour-main-colour, CanvasText);
-          transition: opacity 0.15s ease;
+          transition: opacity 0.15s ease, background 0.1s, border-color 0.1s;
+        }
+        /* Native markup__button theme rules override these legacy fallbacks. */
+        .message-button-container button {
+          background: var(--ultreme-button);
+          color: var(--ultreme-button-text);
+        }
+        .message-button-container button:hover {
+          background: var(--ultreme-button-hover);
+        }
+        .message-button-container button:active {
+          background: var(--ultreme-button-active);
         }
         .message-button-label {
           display: none;
@@ -1330,28 +1375,26 @@
         body[data-ultreme-button-content="both"] .message-button-container button {
           padding: 0.2em 0.5em;
         }
+        /* Fit actions within Mami's compact message line height. */
+        body.compact .message .message-button-container button {
+          min-height: 1.3125em;
+          padding-block: 0;
+          font-size: inherit;
+          line-height: 1;
+        }
         body[data-ultreme-button-appearance="outlined"] .message-button-container button {
-          border-color: var(--ultreme-action-accent, Highlight);
+          /* Brighten the native fill using the theme's lighter colour. */
+          background-clip: border-box;
+          border-color: color-mix(in srgb, var(--ultreme-bright) 35%, transparent);
         }
-        body[data-ultreme-button-appearance="filled"] .message .message-button-container button {
-          background: var(--ultreme-action-accent, Highlight);
-          border: none;
-          outline: none;
-          color: var(--ultreme-action-foreground, HighlightText);
-        }
-        body[data-ultreme-button-appearance="filled"] .message-button-container button:hover,
-        body[data-ultreme-button-appearance="filled"] .message-button-container button:focus-visible {
-          filter: brightness(1.15);
+        body[data-ultreme-button-content="icons"][data-ultreme-button-appearance="plain"] .message .message-button-container button {
+          background: transparent;
+          border-color: transparent;
+          color: inherit;
         }
         .message-button-container button:focus-visible {
-          outline: 2px solid var(--ultreme-action-accent, Highlight);
+          outline: 2px solid var(--ultreme-accent);
           outline-offset: 2px;
-        }
-        .message .message-button-container button:hover {
-          background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
-        }
-        .message .message-button-container button:active {
-          background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
         }
         .message:hover .message-button-container button,
         .message:focus-within .message-button-container button,
@@ -1372,15 +1415,15 @@
         }
         #quote-preview,
         #ultreme-update-prompt {
-          background: var(--theme-colour-input-background, light-dark(#eee, #111));
-          border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
+          background: var(--ultreme-surface);
+          border: 1px solid var(--ultreme-border);
           padding: 6px 10px;
           font-size: 13px;
           margin: 4px -1px;
           display: flex;
           max-width: 100%;
         }
-        #quote-preview { align-items: flex-start; }
+        #quote-preview { align-items: center; }
         #quote-preview span {
           flex: 1 1 auto;
           min-width: 0;
@@ -1393,20 +1436,20 @@
           font-size: 12px;
           padding: 1px 4px;
           border-radius: 2px;
-          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
+          background: var(--ultreme-button);
         }
         #quote-preview .ultreme-preview-media,
         .message__quote-text a.message__quote-media,
         .message__quote-text .message__quote-embed-toggle {
-          color: var(--theme-colour-main-accent, #8559a5);
+          color: var(--ultreme-accent);
           text-decoration: none;
           cursor: pointer;
         }
         #quote-preview .ultreme-preview-spoiler {
           padding: 0 4px;
           border-radius: 2px;
-          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
-          color: var(--theme-colour-main-colour, CanvasText);
+          background: var(--ultreme-button);
+          color: var(--ultreme-text);
           filter: brightness(0.8);
         }
         #cancel-quote,
@@ -1414,13 +1457,37 @@
           flex: 0 0 auto;
           background: none;
           border: none;
-          color: var(--theme-colour-main-colour, CanvasText);
+          color: var(--ultreme-text);
           cursor: pointer;
           font-weight: bold;
           padding: 0 6px;
           font-size: 13px;
         }
-        #cancel-quote { margin-left: 6px; align-self: flex-start; }
+        #cancel-quote {
+          margin-left: 6px;
+          align-self: center;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 1.6em;
+          height: 1.6em;
+          padding: 0;
+          border-radius: 0;
+          line-height: 1;
+        }
+        #cancel-quote:hover,
+        #cancel-quote:focus-visible {
+          background: var(--ultreme-button-hover);
+          color: var(--ultreme-button-text);
+        }
+        #cancel-quote:active {
+          background: var(--ultreme-button-active);
+          color: var(--ultreme-button-text);
+        }
+        #cancel-quote:focus-visible {
+          outline: 1px solid var(--ultreme-accent);
+          outline-offset: 1px;
+        }
         #ultreme-update-prompt {
           align-items: center;
           gap: 10px;
@@ -1441,15 +1508,15 @@
           padding: 1px 6px;
           font-size: 13px;
           cursor: pointer;
-          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
-          color: var(--theme-colour-main-colour, CanvasText);
+          background: var(--ultreme-button);
+          color: var(--ultreme-button-text);
           text-decoration: none;
         }
         .ultreme-update-actions a:hover {
-          background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
+          background: var(--ultreme-button-hover);
         }
         .ultreme-update-actions a:active {
-          background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
+          background: var(--ultreme-button-active);
         }
 
         .highlight-temp {
@@ -1460,7 +1527,7 @@
         }
         @keyframes blinkOutline {
           0%   { outline-color: transparent; }
-          50%  { outline-color: var(--theme-colour-main-accent, #8559a5); }
+          50%  { outline-color: var(--ultreme-accent); }
           100% { outline-color: transparent; }
         }
         .message__time,
@@ -1477,7 +1544,7 @@
           position: absolute;
           inset: 0;
           opacity: 0.1;
-          background-color: color-mix(in srgb, var(--theme-colour-main-accent, #8559a5) 50%, black);
+          background-color: color-mix(in srgb, var(--ultreme-accent) 50%, var(--ultreme-shade));
         }
         .message__container.has-inline-quote {
           display: flex;
@@ -1504,13 +1571,15 @@
           flex-direction: row;
         }
         .message__quote {
+          /* Blend the theme's text colour over the actual message background. */
+          --ultreme-quote-tint: var(--theme-colour-main-colour, currentColor);
           margin-top: 2px;
           margin-bottom: 2px;
           padding: 4px 8px;
           font-size: 12px;
           border-radius: 3px;
-          border: 2px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
-          background: var(--theme-colour-input-background, light-dark(#eee, #111));
+          border: 2px solid color-mix(in srgb, var(--ultreme-quote-tint) 25%, transparent);
+          background: color-mix(in srgb, var(--ultreme-quote-tint) 8%, transparent);
           cursor: pointer;
           opacity: 0.97;
           display: flex;
@@ -1522,7 +1591,7 @@
           box-sizing: border-box;
         }
         .message__quote:hover {
-          border-color: var(--theme-colour-main-accent, #8559a5);
+          border-color: var(--ultreme-accent);
         }
         .message__quote-avatar {
           width: 20px;
@@ -1563,24 +1632,28 @@
           display: block;
           margin-top: 2px;
         }
+        .message__quote-reference {
+          display: none;
+        }
         body.compact #umi-messages .message__container.has-inline-quote {
           display: grid !important;
-          grid-template-columns: max-content minmax(0, 1fr);
+          grid-template-columns: max-content max-content minmax(0, 1fr);
           align-items: baseline;
-          column-gap: 4px;
+          column-gap: 0.4em;
           min-width: 0;
         }
         body.compact #umi-messages .message__container.has-inline-quote .message__meta {
           display: inline-flex !important;
           align-items: baseline;
           grid-column: 1;
-          grid-row: 2;
+          grid-row: 1;
           margin-right: 0;
           margin-bottom: 0 !important;
         }
         body.compact #umi-messages .message__container.has-inline-quote .message__time {
           order: 1;
           margin-right: 3px;
+          line-height: 1;
         }
         body.compact #umi-messages .message__container.has-inline-quote .message__user {
           order: 2;
@@ -1589,78 +1662,71 @@
           display: contents !important;
         }
         body.compact #umi-messages .message__quote {
+          display: none !important;
+        }
+        body.compact[data-ultreme-quote-blocks="1"] #umi-messages .message__quote-reference {
           display: inline-flex !important;
           align-items: center;
-          grid-column: 1 / -1;
+          align-self: center;
+          grid-column: 2;
           grid-row: 1;
           justify-self: start;
-          vertical-align: baseline;
-          gap: 4px;
-          max-width: min(100%, 60vw, 380px);
-          margin: 0 0 2px 0 !important;
-          padding: 2px 5px;
-          border-width: 1px;
-          font-size: 12px;
-        }
-        body.compact #umi-messages .message__quote-avatar {
-          display: none;
-        }
-        body.compact #umi-messages .message__quote-body {
-          display: flex;
-          align-items: baseline;
-          gap: 4px;
+          gap: 0.3em;
           min-width: 0;
+          max-width: 100%;
+          color: var(--ultreme-muted);
+          font-size: 0.9em;
+          line-height: 1;
+          text-decoration: none;
         }
-        body.compact #umi-messages .message__quote-header {
-          flex: 0 1 auto;
-          max-width: max-content;
-          min-width: 0;
-          margin-bottom: 0;
-          overflow: hidden;
-          text-overflow: clip;
+        .message__quote-reference i {
+          flex: 0 0 auto;
         }
-        body.compact #umi-messages .message__quote-header::after {
-          content: " @ " attr(data-quote-time) ":";
-          color: var(--theme-colour-message-time-colour);
-          font-weight: normal;
+        .message__quote-reference-author {
+          flex: 0 0 auto;
+          max-width: calc(100% - 1.5em);
+          overflow-wrap: anywhere;
+          font-weight: 500;
         }
-        body.compact #umi-messages .message__quote-header span {
-          display: none;
-        }
-        body.compact #umi-messages .message__quote-text {
+        .message__quote-reference-text {
           flex: 1 1 auto;
           min-width: 0;
+          max-width: min(25vw, 28ch);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
           word-break: normal;
         }
+        body.compact[data-ultreme-quote-blocks="1"] #umi-messages .message__quote-reference:hover {
+          color: var(--ultreme-text);
+          text-decoration: underline;
+        }
+        .message__quote-reference:focus-visible {
+          outline: 1px solid var(--ultreme-accent);
+          outline-offset: -1px;
+        }
         body.compact #umi-messages .message__quote + .message__text {
-          display: inline-block !important;
-          grid-column: 2;
-          grid-row: 2;
+          display: block !important;
+          grid-column: 3;
+          grid-row: 1;
           min-width: 0;
           margin-top: 0;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
+          white-space: pre-wrap;
         }
-        body.compact #umi-messages .message__text q.ultreme-inline-quote {
-          display: inline-block;
-          max-width: min(55vw, 360px);
-          margin-right: 4px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          vertical-align: bottom;
-        }
-        body.compact #umi-messages .message__text i.ultreme-inline-quote span:not(:first-child) {
-          display: none;
-        }
-        body.compact #umi-messages .message__text q.ultreme-inline-quote br,
-        body.compact #umi-messages .message__text > br.ultreme-inline-quote,
-        body.compact #umi-messages .message__text > span.ultreme-inline-quote {
-          display: none;
+        @media (max-width: 600px) {
+          body.compact #umi-messages .message__container.has-inline-quote {
+            grid-template-columns: max-content minmax(0, 1fr);
+          }
+          body.compact #umi-messages .message__container.has-inline-quote .message__meta {
+            grid-row: 2;
+          }
+          body.compact[data-ultreme-quote-blocks="1"] #umi-messages .message__quote-reference {
+            grid-column: 1 / -1;
+          }
+          body.compact #umi-messages .message__quote + .message__text {
+            grid-column: 2;
+            grid-row: 2;
+          }
         }
         body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__container.has-inline-quote {
           display: flex !important;
@@ -1678,12 +1744,9 @@
         body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__container.has-inline-quote .message__body {
           display: inline !important;
         }
-        body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__quote {
-          display: none !important;
-        }
         body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__quote + .message__text {
           display: inline !important;
-          white-space: nowrap;
+          white-space: pre-wrap;
         }
         body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text i.ultreme-inline-quote,
         body.compact[data-ultreme-quote-blocks="0"] #umi-messages .message__text i.ultreme-inline-quote span,
@@ -1718,7 +1781,7 @@
         #umi-media-modal .umi-media-modal-backdrop {
           position: absolute;
           inset: 0;
-          background: rgba(0, 0, 0, 0.75);
+          background: color-mix(in srgb, var(--ultreme-shade) 75%, transparent);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -1733,7 +1796,6 @@
           justify-content: flex-start;
         }
         #umi-media-modal .umi-media-modal-toolbar {
-          color-scheme: dark;
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -1743,12 +1805,12 @@
           padding: 10px 12px;
           margin-bottom: 8px;
           border-radius: 4px;
-          background: rgba(0, 0, 0, 0.72);
-          box-shadow: 0 0 16px rgba(0, 0, 0, 0.45);
+          background: color-mix(in srgb, var(--ultreme-surface) 92%, transparent);
+          box-shadow: 0 0 16px var(--ultreme-shadow);
           backdrop-filter: blur(2px);
         }
         #umi-media-modal .umi-media-modal-title {
-          color: var(--theme-colour-main-colour, CanvasText);
+          color: var(--ultreme-text);
           font-size: 13px;
           font-family: inherit;
           white-space: nowrap;
@@ -1769,18 +1831,18 @@
           padding: 3px 8px;
           font-size: 13px;
           cursor: pointer;
-          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
-          color: var(--theme-colour-main-colour, CanvasText);
+          background: var(--ultreme-button);
+          color: var(--ultreme-button-text);
           text-decoration: none;
           font-family: inherit;
         }
         #umi-media-modal .umi-media-modal-download:hover,
         #umi-media-modal .umi-media-modal-close:hover {
-          background: var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333));
+          background: var(--ultreme-button-hover);
         }
         #umi-media-modal .umi-media-modal-download:active,
         #umi-media-modal .umi-media-modal-close:active {
-          background: var(--theme-colour-input-menu-button-active, light-dark(#eee, #444));
+          background: var(--ultreme-button-active);
         }
         #umi-media-modal .umi-media-modal-content {
           width: 100%;
@@ -1799,7 +1861,7 @@
           max-width: 100%;
           max-height: 100%;
           display: block;
-          box-shadow: 0 0 16px rgba(0, 0, 0, 0.8);
+          box-shadow: 0 0 16px color-mix(in srgb, var(--ultreme-shade) 80%, transparent);
           object-fit: contain;
         }
         body[data-ultreme-quote-blocks="1"] .ultreme-inline-quote {
@@ -1811,7 +1873,7 @@
         .setting__hint {
           margin-bottom: 4px;
           font-size: 12px;
-          color: var(--theme-colour-message-time-colour, GrayText);
+          color: var(--ultreme-muted);
         }
         .ultreme-setting-disabled {
           opacity: 0.55;
@@ -1823,7 +1885,7 @@
           font-weight: bold;
           letter-spacing: 0.04em;
           text-transform: uppercase;
-          color: var(--theme-colour-message-time-colour, GrayText);
+          color: var(--ultreme-muted);
         }
         .ultreme-setting-field {
           border: none;
@@ -1844,9 +1906,9 @@
           transition: opacity 0.15s ease;
         }
         .upload-progress-item {
-          background: color-mix(in srgb, var(--theme-colour-input-background, light-dark(#eee, #111)) 92%, black);
-          border: 1px solid var(--theme-colour-settings-input-border, light-dark(#ccc, #444));
-          box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
+          background: var(--ultreme-raised);
+          border: 1px solid var(--ultreme-border);
+          box-shadow: 0 8px 22px color-mix(in srgb, var(--ultreme-shade) 30%, transparent);
           border-radius: 4px;
           padding: 10px;
           pointer-events: auto;
@@ -1870,7 +1932,7 @@
           flex: 1 1 auto;
           font-size: 13px;
           font-weight: bold;
-          color: var(--theme-colour-main-colour, CanvasText);
+          color: var(--ultreme-text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -1878,7 +1940,7 @@
         .upload-progress-item__meta,
         .upload-progress-item__size {
           font-size: 12px;
-          color: var(--theme-colour-message-time-colour);
+          color: var(--ultreme-muted);
           white-space: nowrap;
         }
         .upload-progress-item__bar {
@@ -1887,8 +1949,8 @@
           height: 10px;
           overflow: hidden;
           border-radius: 999px;
-          background: var(--theme-colour-input-menu-button, light-dark(#ddd, #212121));
-          box-shadow: 0 0 0 1px var(--theme-colour-input-menu-box-shadow, light-dark(#ccc, #444));
+          background: var(--ultreme-button);
+          box-shadow: 0 0 0 1px var(--ultreme-border);
           margin-bottom: 8px;
         }
         .upload-progress-item__fill {
@@ -1896,21 +1958,22 @@
           width: 0%;
           background: linear-gradient(
             90deg,
-            var(--theme-colour-main-accent, #8559a5),
-            var(--theme-colour-input-menu-button-hover, light-dark(#d9d9d9, #333))
+            var(--ultreme-accent),
+            var(--ultreme-button-hover)
           );
           transition: width 0.15s ease;
         }
         .upload-progress-item.is-done .upload-progress-item__fill {
           background: linear-gradient(
             90deg,
-            color-mix(in srgb, var(--theme-colour-main-accent, #8559a5) 70%, white),
-            var(--theme-colour-main-accent, #8559a5)
+            color-mix(in srgb, var(--ultreme-accent) 70%, var(--ultreme-bright)),
+            var(--ultreme-accent)
           );
         }
         .message.konkira-summary .connection-badge {
           display: inline-block;
-          background: #282828;
+          background: var(--ultreme-button);
+          color: var(--ultreme-button-text);
           border-radius: 4px;
           padding: 1px 5px;
           margin-left: 6px;
@@ -1933,8 +1996,12 @@
         const cancel = document.createElement("button");
         cancel.type = "button";
         cancel.id = "cancel-quote";
-        cancel.textContent = "×";
         cancel.title = "Cancel quote";
+        cancel.setAttribute("aria-label", "Cancel quote");
+        const cancelIcon = document.createElement("i");
+        cancelIcon.className = "fas fa-trash-alt";
+        cancelIcon.setAttribute("aria-hidden", "true");
+        cancel.appendChild(cancelIcon);
         cancel.onclick = () => {
           clearPendingQuote();
         };
@@ -1957,12 +2024,12 @@
       previewInterval = setInterval(updateTime, 1000);
     };
 
-    const clearPendingQuote = ({ clearSelection = true } = {}) => {
+    const clearPendingQuote = () => {
       pendingQuote = null;
       document.getElementById("quote-preview")?.remove();
       clearInterval(previewInterval);
       previewInterval = null;
-      if (clearSelection) clearSelectedMessage();
+      clearSelectedMessage();
     };
 
     const applyQuote = (messageData) => {
@@ -1985,37 +2052,32 @@
       applyQuote(data);
     };
 
-    const selectMessage = (index) => {
-      const messages = getVisibleMessages();
-      clearSelectedMessage();
-
+    const selectMessage = (index, messages) => {
       if (index >= 0 && index < messages.length) {
         const msg = messages[index];
         const messageData = buildQuoteDataFromMessageElement(msg);
         if (messageData) selectQuoteSource(msg, messageData);
+        else clearSelectedMessage();
         selectedMessageIndex = index;
         return;
       }
 
-      clearPendingQuote({ clearSelection: false });
+      clearPendingQuote();
     };
 
     document.addEventListener("mouseup", () => {
       const sel = W.getSelection?.();
       const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
-      const inside =
-        range?.commonAncestorContainer?.closest?.("#umi-messages") ||
-        range?.commonAncestorContainer?.parentElement?.closest?.("#umi-messages");
-      if (!inside) {
+      const container = range?.commonAncestorContainer;
+      const element = container?.closest ? container : container?.parentElement;
+      if (!element?.closest("#umi-messages")) {
         selectedText = "";
         selectedQuoteData = null;
         return;
       }
 
       selectedText = sel.toString().trim();
-      const sourceMessage =
-        range?.commonAncestorContainer?.closest?.(".message") ||
-        range?.commonAncestorContainer?.parentElement?.closest?.(".message");
+      const sourceMessage = element.closest(".message");
       selectedQuoteData =
         selectedText && sourceMessage
           ? buildQuoteDataFromMessageElement(sourceMessage, selectedText)
@@ -2035,7 +2097,7 @@
 
       if (
         !settings.interceptNativeQuoteButton &&
-        t.matches("button.markup__button") &&
+        t.matches(".input__menus button.markup__button") &&
         t.textContent.trim().toLowerCase() === "quote"
       ) {
         setTimeout(() => {
@@ -2065,7 +2127,7 @@
         if (!(t instanceof Element)) return;
         if (!settings.interceptNativeQuoteButton || !selectedQuoteData) return;
         if (
-          !t.matches("button.markup__button") ||
+          !t.matches(".input__menus button.markup__button") ||
           t.textContent.trim().toLowerCase() !== "quote"
         )
           return;
@@ -2110,7 +2172,7 @@
       { className, icon, text, title, visible = true, onClick },
     ) => {
       const button = document.createElement("button");
-      button.className = className;
+      button.className = `${className} markup__button`;
       button.type = "button";
       button.title = title;
       button.setAttribute("aria-label", title);
@@ -2124,7 +2186,6 @@
       button.onclick = onClick;
       button.style.display = visible ? "" : "none";
       container.appendChild(button);
-      return button;
     };
 
     const enhanceScriptQuote = (msg, textEl, reference) => {
@@ -2139,16 +2200,29 @@
 
       if (!targetId) return;
 
-      const arrowSpan = [...textEl.querySelectorAll("span")].find((s) =>
-        (s.textContent || "").includes("└"),
-      );
-      const br = textEl.querySelector("br");
-
       metaI.classList.add("ultreme-inline-quote");
       anchor.classList.add("ultreme-inline-quote");
       qEl.classList.add("ultreme-inline-quote");
-      if (arrowSpan) arrowSpan.classList.add("ultreme-inline-quote");
-      if (br) br.classList.add("ultreme-inline-quote");
+      // Only hide the fallback separator after the quote, not breaks in either message.
+      let separator = qEl.nextSibling;
+      while (separator) {
+        if (separator.nodeType === Node.TEXT_NODE && !separator.textContent.trim()) {
+          const whitespace = document.createElement("span");
+          whitespace.className = "ultreme-inline-quote";
+          separator.before(whitespace);
+          whitespace.appendChild(separator);
+          separator = whitespace.nextSibling;
+          continue;
+        }
+        if (separator.nodeName === "BR") {
+          separator.classList.add("ultreme-inline-quote");
+          separator = separator.nextSibling;
+          continue;
+        }
+        if (separator.nodeName === "SPAN" && /^[└┗][─━-]*\s*$/.test(separator.textContent))
+          separator.classList.add("ultreme-inline-quote");
+        break;
+      }
       qEl.querySelectorAll("br").forEach((quoteBr) => {
         quoteBr.classList.add("ultreme-inline-quote");
         quoteBr.before(document.createTextNode(" "));
@@ -2216,11 +2290,10 @@
 
       const header = document.createElement("div");
       header.className = "message__quote-header";
-      header.dataset.quoteTime = relTime;
       const showColor = quotedColor || DEFAULT_NAME_COLOR;
       header.innerHTML = `<b style="color:${escapeHtml(showColor)};">${escapeHtml(quotedName)}</b>${
         relTime
-          ? ` <span style="color:var(--theme-colour-message-time-colour);">@ ${escapeHtml(relTime)}</span>`
+          ? ` <span style="color:var(--ultreme-muted);">@ ${escapeHtml(relTime)}</span>`
           : ""
       }`;
 
@@ -2229,6 +2302,27 @@
 
       const rawQuoted = getElementTextWithBreaks(qEl);
       const withoutEmbed = rawQuoted.replace(/\[Embed\]/gi, "").trim();
+
+      // This reference is presentation only; outgoing quotes keep their BBCode fallback.
+      const compactReference = document.createElement("a");
+      compactReference.className = "message__quote-reference";
+      compactReference.href = `#${targetId}`;
+      compactReference.title = `${quotedName}${relTime ? ` @ ${relTime}` : ""}: ${withoutEmbed}`;
+      compactReference.setAttribute("aria-label", `Quoted ${quotedName}: ${withoutEmbed}. Go to original message.`);
+      const replyIcon = document.createElement("i");
+      replyIcon.className = "fas fa-reply";
+      replyIcon.setAttribute("aria-hidden", "true");
+      const referenceAuthor = document.createElement("span");
+      referenceAuthor.className = "message__quote-reference-author";
+      referenceAuthor.textContent = `${quotedName}:`;
+      const referenceText = document.createElement("span");
+      referenceText.className = "message__quote-reference-text";
+      referenceText.textContent = `“${withoutEmbed.replace(/\s+/g, " ")}”`;
+      compactReference.append(replyIcon, referenceAuthor, referenceText);
+      compactReference.addEventListener("click", (event) => {
+        event.preventDefault();
+        scrollToMessageId(targetId);
+      });
 
       let lastIndex = 0;
       for (const match of withoutEmbed.matchAll(/(https?:)?\/\/\S+/g)) {
@@ -2293,8 +2387,10 @@
         if (textEl.parentNode === bodyWrapper)
           bodyWrapper.insertBefore(quoteContainer, textEl);
         else bodyWrapper.insertBefore(quoteContainer, bodyWrapper.firstChild);
+        quoteContainer.before(compactReference);
       } else if (meta?.parentNode) {
         meta.parentNode.insertBefore(quoteContainer, meta.nextSibling);
+        quoteContainer.before(compactReference);
       }
 
       quoteContainer.addEventListener("click", (ev) => {
@@ -2409,7 +2505,12 @@
           row.classList.toggle("ultreme-setting-disabled", !enabled);
           for (const input of inputs) {
             input.disabled = !enabled;
-            if (field.control === "select") input.value = settings[field.key];
+            if (field.control === "select") {
+              input.value = settings[field.key];
+              field.options.forEach((option, index) => {
+                input.options[index].disabled = !(option.enabled?.(settings) ?? true);
+              });
+            }
             else input.checked = field.options
               ? input.value === settings[field.key]
               : settings[field.key];
@@ -2468,13 +2569,13 @@
             input.addEventListener("change", () => {
               if (input.disabled || (isRadio && !input.checked)) return;
               saveSetting(field.key, field.options ? input.value : input.checked);
-              syncControls();
               if (section.id === "uploads") {
                 if (settings.enableUploadProgress) {
                   refreshUploadProgressUI();
                   showUploadProgressPreview();
                 } else disableUploadProgressUI();
               } else settingEffects[field.key]?.();
+              syncControls();
             });
           }
           if (field.hint) {
@@ -2586,11 +2687,12 @@
     };
 
     injectCSS();
-    syncActionThemeColors();
+    syncThemeColors();
     // Mami changes body theme classes after loading the selected stylesheet.
-    new MutationObserver(syncActionThemeColors).observe(document.body, {
-      attributes: true, attributeFilter: ["class"],
+    new MutationObserver(syncThemeColors).observe(document.body, {
+      attributes: true, attributeFilter: ["class", "style"],
     });
+    W.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncThemeColors);
     applyMessageButtonSettings();
     setupUserscriptSettingsTab();
     const touchActions = W.matchMedia("(hover: none)");
@@ -2678,14 +2780,14 @@
       if (messages.length === 0) return;
 
       if (e.key === "ArrowUp") {
-        if (selectedMessageIndex === -1) selectMessage(messages.length - 1);
+        if (selectedMessageIndex === -1) selectMessage(messages.length - 1, messages);
         else if (selectedMessageIndex > 0)
-          selectMessage(selectedMessageIndex - 1);
+          selectMessage(selectedMessageIndex - 1, messages);
       } else {
         if (selectedMessageIndex === -1) return;
         if (selectedMessageIndex < messages.length - 1)
-          selectMessage(selectedMessageIndex + 1);
-        else selectMessage(-1);
+          selectMessage(selectedMessageIndex + 1, messages);
+        else selectMessage(-1, messages);
       }
     });
   };
