@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      6.0.1
+// @version      6.1
 // @description  Quality of life features for Flashii chat.
 // @author       lester
 // @match        *://chat.flashii.net/*
@@ -31,7 +31,6 @@
     "https://patchii.net/lester/flashii-chat-userscripts/raw/branch/trunk/ultreme-script.meta.js";
 
   const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-  const MINIMAL_HIDE_DELAY_MS = 2000;
 
   // Define settings, defaults, dependencies, and hint text
   const SETTINGS_SECTIONS = [
@@ -54,7 +53,18 @@
       id: "messages", title: "Messages", fields: [
         {
           key: "minimalMode", label: "Minimal mode", default: false,
-          hint: `Hover or tap the square to reveal controls. They hide ${MINIMAL_HIDE_DELAY_MS / 1000} seconds after you leave them. Quotes and upload cards stay visible.`,
+          hint: "Hover or tap the square to reveal controls. They hide after you stop using them. Quotes and upload cards stay visible.",
+        },
+        {
+          key: "minimalOverlay", label: "Use overlays in minimal mode", default: true,
+          enabled: values => values.minimalMode,
+          hint: "Reveal controls over the chat without resizing messages or the text field. Turn off to resize the chat when controls appear.",
+        },
+        {
+          key: "minimalHideDelay", label: "Hide controls after (seconds)", default: 1.5,
+          control: "number", min: 0.25, max: 2147483.5, step: 0.25,
+          enabled: values => values.minimalMode,
+          hint: "Time after you leave the controls. Hovering, keyboard focus, dragging, and open dialogs keep controls visible.",
         },
         { key: "hideFormattingToolbar", label: "Hide formatting toolbar", default: false },
         {
@@ -107,11 +117,17 @@
 
   // Persist settings with their existing localStorage keys
   const settingFields = SETTINGS_SECTIONS.flatMap(section => section.fields);
+  const normalizeNumberSetting = (field, value, fallback = field.default) => {
+    if (String(value).trim() === "" || !Number.isFinite(Number(value))) return fallback;
+    const clamped = Math.max(field.min, Math.min(field.max, Number(value)));
+    return Math.round(clamped / field.step) * field.step;
+  };
   const loadSetting = (field) => {
     try {
       const value = localStorage.getItem(STORAGE_PREFIX + field.key);
       if (value === null) return field.default;
       if (typeof field.default === "boolean") return value === "1";
+      if (field.control === "number") return normalizeNumberSetting(field, value);
       return field.options.some(option => option.value === value) ? value : field.default;
     } catch {
       return field.default;
@@ -167,6 +183,40 @@
   let minimalRevealTarget = false;
   let minimalAnimationVersion = 0;
   let minimalAnimations = [];
+  let minimalOverlayControls = null;
+  let minimalControlHomes = [];
+  // Move native controls together while preserving their handlers and original positions.
+  const syncMinimalOverlay = () => {
+    for (const { element, home } of minimalControlHomes) home.replaceWith(element);
+    minimalControlHomes = [];
+    minimalOverlayControls?.remove();
+    minimalOverlayControls = null;
+    setBodyFlag("ultremeMinimalOverlay", settings.minimalMode && settings.minimalOverlay);
+    if (!settings.minimalMode || !settings.minimalOverlay) return;
+    const input = getChatInput();
+    const main = input?.closest(".input__main");
+    const form = input?.form;
+    if (!main || !form) return;
+    const overlay = document.createElement("div");
+    overlay.id = "ultreme-minimal-controls";
+    const toolbar = document.createElement("div");
+    toolbar.className = "input__menu ultreme-minimal-toolbar";
+    const actions = document.createElement("div");
+    actions.className = "input__main ultreme-minimal-input-actions";
+    const move = (element, host) => {
+      const home = document.createComment("Minimal control position");
+      element.before(home);
+      minimalControlHomes.push({ element, home });
+      host.appendChild(element);
+    };
+    const markup = form.querySelector(".markup__buttons");
+    if (markup) move(markup, toolbar);
+    for (const element of [...main.children])
+      if (element.matches("button:not(#ultreme-minimal-reveal)")) move(element, actions);
+    overlay.append(toolbar, actions);
+    form.appendChild(overlay);
+    minimalOverlayControls = overlay;
+  };
   const cancelMinimalAnimation = () => {
     ++minimalAnimationVersion;
     for (const animation of minimalAnimations) animation.cancel();
@@ -181,9 +231,12 @@
     const main = input?.closest(".input__main");
     const form = input?.form;
     const side = document.querySelector(".chat-side") || document.querySelector(".sidebar");
+    const overlay = settings.minimalOverlay;
     const roots = [];
     if (side) roots.push({ element: side, axis: "width" });
-    if (form) {
+    if (overlay && minimalOverlayControls)
+      for (const element of minimalOverlayControls.children) roots.push({ element, axis: "height" });
+    if (!overlay && form) {
       for (const element of form.children) {
         if (element === main || element.id === "quote-preview") continue;
         if (element.querySelector(".toolbar-attachment")) {
@@ -193,16 +246,20 @@
         } else roots.push({ element, axis: "height" });
       }
     }
-    for (const element of main?.children || [])
+    for (const element of overlay ? [] : main?.children || [])
       if (element !== input && element.id !== "ultreme-minimal-reveal" && !element.hidden)
         roots.push({ element, axis: "width" });
     const before = roots.map(({ element, axis }) => element.getBoundingClientRect()[axis]);
+    const beforeStyles = roots.map(({ element }) => element.getClientRects().length
+      ? { transform: W.getComputedStyle(element).transform, opacity: W.getComputedStyle(element).opacity }
+      : null);
     const chatMain = document.querySelector(".chat-main");
     const beforeMargin = chatMain && W.getComputedStyle(chatMain).marginRight;
     cancelMinimalAnimation();
     const version = minimalAnimationVersion;
     document.body.dataset.ultremeMinimalRevealed = "1";
     document.body.dataset.ultremeMinimalClosing = show ? "0" : "1";
+    if (overlay && side) form?.style.setProperty("--ultreme-minimal-sidebar-width", `${side.getBoundingClientRect().width}px`);
     if (W.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       document.body.dataset.ultremeMinimalRevealed = show ? "1" : "0";
       document.body.dataset.ultremeMinimalClosing = "0";
@@ -216,6 +273,12 @@
     };
     roots.forEach(({ element, axis }, index) => {
       if (!element.getClientRects().length) return;
+      if (overlay) {
+        const hidden = { transform: element === side ? "translateX(12px)" : "translateY(8px)", opacity: 0 };
+        animate(element, [beforeStyles[index] || hidden,
+          show ? { transform: "none", opacity: 1 } : hidden]);
+        return;
+      }
       const size = element.getBoundingClientRect()[axis];
       if (!size && !before[index]) return;
       const minimum = axis === "width" ? "minWidth" : "minHeight";
@@ -226,7 +289,7 @@
       if (element === side && element.matches(".chat-side") && element.firstElementChild)
         animate(element.firstElementChild, [{ minWidth: `${size}px` }, { minWidth: `${size}px` }]);
     });
-    if (chatMain) {
+    if (!overlay && chatMain) {
       const margin = show ? W.getComputedStyle(chatMain).marginRight : "0px";
       if (beforeMargin !== margin) animate(chatMain, [{ marginRight: beforeMargin }, { marginRight: margin }]);
     }
@@ -249,16 +312,15 @@
   // Hide minimal controls after the inactivity delay unless interaction continues
   const scheduleMinimalHide = () => {
     clearTimeout(minimalHideTimer);
-    if (!settings.minimalMode || minimalPointerInControls || minimalPointerDown ||
+    if (!settings.minimalMode || minimalPointerInControls || minimalPointerDown || isMinimalControl(document.activeElement) ||
         document.body.dataset.ultremeMinimalRevealed !== "1") return;
     minimalHideTimer = setTimeout(() => {
       const openDialog = [...document.querySelectorAll(".emopick, .msgbox-container, .attachview, #umi-media-modal")]
         .some(element => element.getClientRects().length && W.getComputedStyle(element).visibility !== "hidden");
       if (openDialog) { scheduleMinimalHide(); return; }
-      if (isMinimalControl(document.activeElement)) getChatInput()?.focus({ preventScroll: true });
       transitionMinimalControls(false);
       dismissTouchActions();
-    }, MINIMAL_HIDE_DELAY_MS);
+    }, settings.minimalHideDelay * 1000);
   };
   const revealMinimalControls = () => {
     if (!settings.minimalMode) return;
@@ -273,9 +335,18 @@
     minimalPointerInControls = minimalPointerDown = false;
     if (settings.minimalMode && isMinimalControl(document.activeElement)) getChatInput()?.focus({ preventScroll: true });
     setBodyFlag("ultremeMinimal", settings.minimalMode);
+    syncMinimalOverlay();
     document.body.dataset.ultremeMinimalRevealed = "0";
     document.body.dataset.ultremeMinimalClosing = "0";
     dismissTouchActions();
+  };
+  const applyMinimalOverlaySetting = () => {
+    const revealed = minimalRevealTarget;
+    cancelMinimalAnimation();
+    syncMinimalOverlay();
+    document.body.dataset.ultremeMinimalRevealed = revealed ? "1" : "0";
+    document.body.dataset.ultremeMinimalClosing = "0";
+    scheduleMinimalHide();
   };
 
   // Bind pointer, focus, resize, and touch events for minimal mode
@@ -301,10 +372,18 @@
       const host = main.getBoundingClientRect();
       reveal.style.right = `${Math.max(0, host.right - field.right) + 4}px`;
       reveal.style.bottom = `${Math.max(0, host.bottom - field.bottom) + 4}px`;
+      input.form?.style.setProperty("--ultreme-minimal-input-height", `${field.height}px`);
     };
     const resize = new ResizeObserver(positionReveal);
     resize.observe(input);
     resize.observe(main);
+    const side = document.querySelector(".chat-side");
+    if (side && input.form) {
+      const resizeSidebar = new ResizeObserver(() => {
+        input.form.style.setProperty("--ultreme-minimal-sidebar-width", `${side.getBoundingClientRect().width}px`);
+      });
+      resizeSidebar.observe(side);
+    }
     const attachments = input.form?.querySelector(".toolbar-attachments-inner");
     if (attachments) new MutationObserver(() => {
       for (const animation of minimalAnimations) {
@@ -340,7 +419,9 @@
     document.addEventListener("pointercancel", release);
     document.addEventListener("focusin", event => {
       if (isMinimalControl(event.target)) revealMinimalControls();
+      else scheduleMinimalHide();
     });
+    document.addEventListener("focusout", () => queueMicrotask(scheduleMinimalHide));
     document.addEventListener("keydown", event => {
       if (isMinimalControl(event.target)) revealMinimalControls();
     });
@@ -1400,6 +1481,43 @@
         }
         body[data-ultreme-minimal="1"][data-ultreme-minimal-revealed="0"] textarea.input__text {
           border-right-width: 1px;
+        }
+        body[data-ultreme-minimal-overlay="1"] .chat {
+          overflow: hidden;
+        }
+        body[data-ultreme-minimal-overlay="1"] .chat-main {
+          margin-right: 0;
+        }
+        body[data-ultreme-minimal-overlay="1"] .chat-side {
+          position: absolute;
+          top: max(4px, env(safe-area-inset-top));
+          right: max(4px, env(safe-area-inset-right));
+          bottom: max(4px, env(safe-area-inset-bottom));
+          max-width: min(260px, calc(100% - 8px));
+          z-index: 20;
+        }
+        body[data-ultreme-minimal-overlay="1"] textarea.input__text {
+          border-right-width: 1px;
+        }
+        body[data-ultreme-minimal-overlay="1"] form.input > .input__menu:not(#quote-preview):not(:has(.toolbar-attachment)) {
+          display: none !important;
+        }
+        #ultreme-minimal-controls {
+          display: contents;
+        }
+        #ultreme-minimal-controls > .ultreme-minimal-toolbar {
+          position: absolute;
+          left: 0;
+          right: calc(var(--ultreme-minimal-sidebar-width, 0px) + 4px);
+          bottom: 100%;
+          z-index: 21;
+        }
+        body[data-ultreme-minimal-overlay="1"] form.input .input__main.ultreme-minimal-input-actions {
+          position: absolute;
+          right: calc(var(--ultreme-minimal-sidebar-width, 0px) + 4px);
+          bottom: 0;
+          height: var(--ultreme-minimal-input-height, 48px);
+          z-index: 21;
         }
         .message.ultreme-has-actions {
           flex-wrap: wrap;
@@ -2553,6 +2671,8 @@
 
       const settingEffects = {
         "minimalMode": applyMinimalModeSetting,
+        "minimalOverlay": applyMinimalOverlaySetting,
+        "minimalHideDelay": scheduleMinimalHide,
         "hideFormattingToolbar": applyFormattingToolbarSetting,
         "enableMessageHistory": resetMessageHistoryNavigation,
         "messageButtonContent": applyMessageButtonSettings,
@@ -2618,7 +2738,8 @@
           const enabled = field.enabled?.(settings) ?? true;
           row.classList.toggle("ultreme-setting-disabled", !enabled);
           input.disabled = !enabled;
-          if (field.control === "select") {
+          if (field.control === "number") input.value = settings[field.key];
+          else if (field.control === "select") {
             input.value = settings[field.key];
             field.options.forEach((option, index) => {
               input.options[index].disabled = !(option.enabled?.(settings) ?? true);
@@ -2634,14 +2755,20 @@
         sections.set(section.id, body);
         for (const field of section.fields) {
           const isSelect = field.control === "select";
+          const isNumber = field.control === "number";
           const row = document.createElement("div");
-          row.className = `setting__container setting__container--${isSelect ? "select" : "checkbox"}`;
+          row.className = `setting__container setting__container--${field.control || "checkbox"}`;
           row.dataset.setting = field.key;
           body.appendChild(row);
           const label = document.createElement("label");
           label.className = "setting__label";
           const input = document.createElement(isSelect ? "select" : "input");
-          if (!isSelect) input.type = "checkbox";
+          if (!isSelect) input.type = isNumber ? "number" : "checkbox";
+          if (isNumber) {
+            input.min = field.min;
+            input.max = field.max;
+            input.step = field.step;
+          }
           input.id = `ultreme-setting-${field.key}`;
           label.htmlFor = input.id;
           input.className = `setting__input js-ultreme-${field.key}`;
@@ -2656,16 +2783,18 @@
           }
           const text = document.createElement("span");
           text.textContent = field.label;
-          if (isSelect) label.appendChild(text);
+          if (isSelect || isNumber) label.appendChild(text);
           else label.append(input, text);
           const heading = document.createElement("div");
           heading.className = "ultreme-setting-heading";
           heading.appendChild(label);
           row.appendChild(heading);
-          if (isSelect) row.appendChild(input);
+          if (isSelect || isNumber) row.appendChild(input);
           input.addEventListener("change", () => {
             if (input.disabled) return;
-            saveSetting(field.key, isSelect ? input.value : input.checked);
+            saveSetting(field.key, isNumber
+              ? normalizeNumberSetting(field, input.value, settings[field.key])
+              : isSelect ? input.value : input.checked);
             settingEffects[field.key]?.();
             syncControls();
           });

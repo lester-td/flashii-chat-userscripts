@@ -71,7 +71,10 @@ Hide unnecessary interface elements for a cleaner chat layout.
 Minimal mode keeps messages, the text field, message actions, quote previews, and native upload cards accessible.
 
 - Hover, tap, or focus the small square at the bottom-right of the text field to reveal hidden controls.
-- Controls automatically hide **2 seconds** after the pointer leaves.
+- Controls appear as overlays by default, keeping the message list and text field stationary.
+- Turn off **Use overlays in minimal mode** to use the resizing layout instead.
+- Set **Hide controls after (seconds)** with a number field that adjusts in **0.25-second** steps. The default is **1.5 seconds**.
+- Controls stay visible while hovered, focused with the keyboard, or being dragged. The hide delay starts when interaction ends.
 - Show and hide transitions follow Mami's sidebar animation timing.
 - Open dialogs remain accessible until closed.
 - Upload progress, cancellation, retries, and completed attachments remain usable.
