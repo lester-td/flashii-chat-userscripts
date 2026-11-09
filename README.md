@@ -1,47 +1,135 @@
 # Flashii Chat — Ultreme Script
 
-## Install
+A userscript for [Flashii Chat](https://chat.flashii.net/) that adds richer quoting, message actions, media previews, interface customisation, and quality-of-life improvements.
 
-Install Tampermonkey or Greasemonkey, then click below. Reload chat and open **Ultreme Script** in the sidebar to configure it.
+## Installation
 
-[![Download Ultreme](docs/dl/ultreme-dl-75.png)](https://patchii.net/lester/flashii-chat-userscripts/raw/branch/trunk/ultreme-script.user.js)
+1. Install [Tampermonkey](https://www.tampermonkey.net/) or Greasemonkey.
+2. **[Install Ultreme Script](https://patchii.net/lester/flashii-chat-userscripts/raw/branch/trunk/ultreme-script.user.js)**
+3. Reload Flashii Chat.
+4. Open **Ultreme Script** in the sidebar to configure its features.
+
+Settings are saved locally and persist across reloads.
 
 ## Features
 
-- Full and partial quotes, previews, author avatars, and links to original messages.
-- Delete your own messages using the Delete button or **Shift+click** on the timestamp.
-- Customizable action icons, labels, visibility, and theme-colored button styles. On touch screens, tap a message to reveal its actions.
-- Combined upload progress or per-file popups.
-- Image, video, and audio previews for quoted media.
-- Join/leave notice compaction, forum and jump-to-bottom buttons, and update checks.
+### Quoting
 
-Use **Ctrl+↑ / Ctrl+↓** to select messages to quote and **Esc** to cancel a pending quote.
+- Quote entire messages or selected text while preserving BBCode formatting.
+- Preview quotes before sending, with the option to cancel.
+- Display quoted messages with author names, timestamps, and optional avatars.
+- Navigate directly to original messages using quote links.
+- Automatically shorten long excerpts while preserving formatting and complete media URLs.
+- Exclude attachment metadata and file sizes from quoted content.
 
-## Screenshots
+**Keyboard shortcuts:**
+- **Ctrl+↑ / Ctrl+↓** — Select messages to quote.
+- **Esc** — Cancel a pending quote.
 
-**Settings**
+Quote avatars can be enabled or disabled under **Quotes**. When disabled, a reply icon is displayed instead.
 
-![Userscript settings](docs/ss/script-settings.png)
+### Message Actions
 
-**Quoting**
+Add configurable actions to chat messages:
 
-![Quote preview and message quotes](docs/ss/quoting.png)
-![Quoted image embeds](docs/ss/quoting-image-embed.png)
+- **Quote** — Quote a message or selected text.
+- **Go to quoted** — Jump to the referenced message.
+- **Delete** — Delete your own messages.
 
-**Upload progress**
+Alternatively, hold **Shift** and click your message's timestamp to delete it.
 
-![Per-file upload popups](docs/ss/progress-popup.png)
+Message action buttons support icons, text labels, or both, with configurable appearance and visibility. On touchscreens, tap a message to reveal its actions.
 
-<details>
-<summary>Combined progress bar styles</summary>
+### Sent Message History
 
-![Progress bar style 1](docs/ss/progress-type1.png)
-![Progress bar style 2](docs/ss/progress-type2.png)
-![Progress bar style 3](docs/ss/progress-type3.png)
-![Progress bar style 4](docs/ss/progress-type4.png)
+Recall previously sent messages without leaving the text field.
 
-</details>
+- **↑** on the first line — Recall an older message.
+- **↓** on the last line — Move forward through history.
+- Moving past the newest entry restores your previous draft and cursor position.
+- Normal arrow-key navigation remains available when editing multiline messages.
 
-**Media viewer**
+History is stored in memory until the chat is reloaded and can be toggled under **Messages**.
 
-![Quoted media viewer](docs/ss/media-viewer.png)
+*Adapted from geb's sockchat message history userscript.*
+
+### Media Previews
+
+View image, video, and audio attachments referenced in quotes.
+
+- Open supported media in the built-in viewer.
+- Expand or collapse media embeds directly within quote blocks.
+- Access media through direct viewer links in compact mode.
+- Open or download the original media from the viewer.
+
+Media URLs remain intact when long quotes are shortened.
+
+### Minimal Mode
+
+Hide unnecessary interface elements for a cleaner chat layout.
+
+Minimal mode keeps messages, the text field, message actions, quote previews, and native upload cards accessible.
+
+- Hover, tap, or focus the small square at the bottom-right of the text field to reveal hidden controls.
+- Controls automatically hide **2 seconds** after the pointer leaves.
+- Show and hide transitions follow Mami's sidebar animation timing.
+- Open dialogs remain accessible until closed.
+- Upload progress, cancellation, retries, and completed attachments remain usable.
+- Reduced-motion preferences are respected.
+
+Minimal mode can be toggled under **Messages** and remains enabled across reloads.
+
+### Interface Customisation
+
+Adjust the chat interface under **Messages**.
+
+**Message buttons**
+- Display icons, text, or both.
+- Show actions on hover, focus, or tap, or keep them permanently visible.
+- Choose between plain, subtle, and outlined button styles.
+- Match button colours to the active Mami theme.
+
+**Formatting toolbar**
+- Hide formatting buttons without affecting uploads or quote previews.
+
+Changes apply immediately without reloading the page.
+
+### Connection Notices
+
+Compact consecutive join and leave notices to reduce clutter.
+
+Repeated connection activity is combined into a single notice, with summaries for users who reconnect, leave shortly after joining, or repeatedly disconnect.
+
+This feature can be toggled under **Messages**.
+
+### Navigation
+
+Enable additional sidebar shortcuts under **Navigation**.
+
+- **Forum** — Open the Flashii Forum.
+- **Jump to bottom** — Scroll to the latest chat messages.
+
+Both buttons can be enabled or disabled independently.
+
+### Script Settings
+
+Configure individual features through the **Ultreme Script** sidebar.
+
+Settings are organised into four sections:
+
+- **Quotes** — Quote controls, formatting, and avatars.
+- **Messages** — Message actions, history, minimal mode, and interface preferences.
+- **Navigation** — Additional sidebar buttons.
+- **About** — Script information and update checks.
+
+Some settings include a superscript **?** that displays additional information when clicked.
+
+Only one hint can be displayed at a time. Press **Esc** to dismiss it. Hints also close automatically when switching sections, closing the settings sidebar, or hiding the interface in minimal mode.
+
+### Update Checks
+
+The script checks for updates and displays a notification when a newer version is available.
+
+You can also check manually through **Ultreme Script → About**.
+
+Updates are distributed through the [Patchii repository](https://patchii.net/lester/flashii-chat-userscripts).

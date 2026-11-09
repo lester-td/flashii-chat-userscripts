@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      5.8
-// @description  Better quotes & delete button, quote blocks, upload progress bar, and Go to Forum button with settings.
+// @version      6.0
+// @description  Quality of life features for Flashii chat.
 // @author       lester
 // @match        *://chat.flashii.net/*
 // @grant        unsafeWindow
