@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      6.0
+// @version      6.0.1
 // @description  Quality of life features for Flashii chat.
 // @author       lester
 // @match        *://chat.flashii.net/*
@@ -1810,21 +1810,26 @@
           flex: 0 0 auto;
         }
         .message__quote-reference-author {
-          flex: 0 0 auto;
-          max-width: calc(100% - 1.5em);
+          flex: 0 1 auto;
+          min-width: 0;
           overflow-wrap: anywhere;
           font-weight: 500;
         }
         .message__quote-reference-text {
+          display: inline-flex;
           flex: 1 1 auto;
           min-width: 0;
           max-width: min(25vw, 28ch);
           white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
           word-break: normal;
         }
+        .message__quote-reference-content {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
         .message__quote-reference-text--media {
+          display: inline;
           max-width: min(50vw, 60ch);
           white-space: normal;
           overflow: visible;
@@ -2405,7 +2410,11 @@
           hasMedia = true;
         } else link.replaceWith(...link.childNodes);
       }
-      if (snippet.textContent.trim()) referenceText.append("“", ...snippet.childNodes, "”");
+      if (snippet.textContent.trim()) {
+        // Keep punctuation outside the clipped excerpt so ellipsis retains both quotes.
+        snippet.className = "message__quote-reference-content";
+        referenceText.append("“", ...(hasMedia ? snippet.childNodes : [snippet]), "”");
+      }
       compactWrap.appendChild(compactReference);
       compactReference.append(replyIcon, referenceAuthor);
       if (hasMedia) {
