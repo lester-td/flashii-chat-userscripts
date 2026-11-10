@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      6.2
+// @version      6.2.1
 // @description  Quality of life features for Flashii chat.
 // @author       lester
 // @match        *://chat.flashii.net/*
@@ -1546,6 +1546,12 @@
         .message.ultreme-has-actions .message__container {
           flex: 1 1 min(12em, calc(100% - 3.5em));
           min-width: min(12em, calc(100% - 3.5em));
+        }
+        body.compact #umi-messages .message:not(.message-tiny) > .message__container:not(.has-inline-quote) {
+          display: flex;
+        }
+        body.compact #umi-messages .message:not(.message-tiny) > .message__container:not(.has-inline-quote) > .message__text {
+          min-width: 0;
         }
         .message .message-button-container {
           display: flex;
