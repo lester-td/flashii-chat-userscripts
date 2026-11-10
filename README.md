@@ -11,6 +11,15 @@ A userscript for [Flashii Chat](https://chat.flashii.net/) that adds richer quot
 
 Settings are saved locally and persist across reloads.
 
+### Ultreme Script B
+
+If the standard version does not work with your userscript manager, try **[Ultreme Script B](https://patchii.net/lester/flashii-chat-userscripts/raw/branch/trunk/ultreme-script-b.user.js)**. It keeps the same chat features and locally saved settings, with these compatibility changes:
+
+- Uses `@inject-into page` and accesses the chat client through `window` directly, replacing `unsafeWindow`.
+- Runs at `document-idle` and uses `@grant none`, with no dependency on GM APIs.
+- In-chat update checks and notifications are removed.
+- Uses separate update and download URLs so updates keep you on build B.
+
 ## Features
 
 ### Quoting
@@ -86,6 +95,11 @@ Minimal mode can be toggled under **Messages** and remains enabled across reload
 
 Adjust the chat interface under **Messages**.
 
+**Message list zoom**
+- Scale messages, avatars, and media from **50% to 200%** in **5%** steps.
+- Set **Message list zoom (%)** to **100** to restore the original size.
+- The composer and sidebar keep their usual size, and the zoom level persists across reloads.
+
 **Message buttons**
 - Display icons, text, or both.
 - Show actions on hover, focus, or tap, or keep them permanently visible.
@@ -131,7 +145,7 @@ Only one hint can be displayed at a time. Press **Esc** to dismiss it. Hints als
 
 ### Update Checks
 
-The script checks for updates and displays a notification when a newer version is available.
+The desktop script checks for updates and displays a notification when a newer version is available.
 
 You can also check manually through **Ultreme Script → About**.
 

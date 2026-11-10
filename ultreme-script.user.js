@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flashii Chat - Ultreme Script
 // @namespace    https://patchii.net/lester/flashii-chat-userscripts
-// @version      6.1
+// @version      6.2
 // @description  Quality of life features for Flashii chat.
 // @author       lester
 // @match        *://chat.flashii.net/*
@@ -52,6 +52,10 @@
     {
       id: "messages", title: "Messages", fields: [
         {
+          key: "messageListZoom", label: "Message list zoom (%)", default: 100,
+          control: "number", min: 50, max: 200, step: 5,
+        },
+        {
           key: "minimalMode", label: "Minimal mode", default: false,
           hint: "Hover or tap the square to reveal controls. They hide after you stop using them. Quotes and upload cards stay visible.",
         },
@@ -64,7 +68,6 @@
           key: "minimalHideDelay", label: "Hide controls after (seconds)", default: 1.5,
           control: "number", min: 0.25, max: 2147483.5, step: 0.25,
           enabled: values => values.minimalMode,
-          hint: "Time after you leave the controls. Hovering, keyboard focus, dragging, and open dialogs keep controls visible.",
         },
         { key: "hideFormattingToolbar", label: "Hide formatting toolbar", default: false },
         {
@@ -93,7 +96,6 @@
             { value: "subtle", label: "Subtle" },
             { value: "outlined", label: "Outline" },
           ],
-          hint: "Plain is available with icons only.",
         },
         {
           key: "enableDelete", label: "Enable deletion", default: true,
@@ -542,6 +544,25 @@
   const getMessagesContainer = () => document.getElementById("umi-messages");
   const getMessagesList = () =>
     getMessagesContainer()?.querySelector(".messages-list") || getMessagesContainer();
+  const applyMessageListZoom = () => {
+    const container = getMessagesContainer();
+    const list = container?.querySelector(".messages-list");
+    if (!list) return;
+    const zoom = String(settings.messageListZoom / 100);
+    if (list.style.zoom === zoom) return;
+
+    // Keep the latest messages in view, or preserve the row being read.
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 2;
+    const viewport = container.getBoundingClientRect();
+    const anchor = atBottom ? null : [...list.children].find(row => {
+      const rect = row.getBoundingClientRect();
+      return rect.height > 0 && rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    const top = anchor?.getBoundingClientRect().top;
+    list.style.zoom = zoom;
+    if (atBottom) container.scrollTop = container.scrollHeight;
+    else if (anchor) container.scrollTop += anchor.getBoundingClientRect().top - top;
+  };
   const getChatInput = () => document.querySelector("textarea.input__text");
   const getNativeQuoteButton = (target) => {
     const button = target.closest("form.input .markup__button");
@@ -1588,7 +1609,7 @@
         }
         body[data-ultreme-button-appearance="outlined"] .message-button-container button {
           background-clip: border-box;
-          border-color: var(--ultreme-outline);
+          border: 1px solid color-mix(in srgb, var(--ultreme-outline) 60%, var(--ultreme-button-text));
         }
         body.theme-archaic[data-ultreme-button-appearance="outlined"] .message-button-container button {
           border-radius: 0;
@@ -2670,6 +2691,7 @@
       };
 
       const settingEffects = {
+        "messageListZoom": applyMessageListZoom,
         "minimalMode": applyMinimalModeSetting,
         "minimalOverlay": applyMinimalOverlaySetting,
         "minimalHideDelay": scheduleMinimalHide,
@@ -2939,6 +2961,7 @@
     W.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncThemeColors);
     applyMessageButtonSettings();
     applyFormattingToolbarSetting();
+    applyMessageListZoom();
     setupUserscriptSettingsTab();
     setupMinimalMode();
     const touchActions = W.matchMedia("(hover: none)");
